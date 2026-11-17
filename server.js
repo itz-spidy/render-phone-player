@@ -1,14 +1,19 @@
-const puppeteer = require('puppeteer');
+const http = require('http');
+const net = require('net');
+const url = require('url');
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const puppeteer = require('puppeteer');
+const { WebSocketServer } = require('ws');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+const PROXY_PORT = 8080;
 const VERCEL_API_URL = process.env.VERCEL_API_URL || 'https://vercel-browser-controller.vercel.app/api/url';
 const SCAN_INTERVAL_MS = 60 * 1000;
 
@@ -21,31 +26,186 @@ function log(...args) {
   if (logBuffer.length > 250) logBuffer.shift();
 }
 
-// Proxies sorted from fastest to slowest (benchmarked against YouTube)
-const PROXIES = [
-  { host: '64.137.10.153', port: 5803, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '989ms' },
-  { host: '64.137.96.74', port: 6641, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1033ms' },
-  { host: '84.247.60.125', port: 6095, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1113ms' },
-  { host: '45.38.107.97', port: 6014, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1192ms' },
-  { host: '38.154.185.97', port: 6370, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1587ms' },
-  { host: '198.23.243.226', port: 6361, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1751ms' },
-  { host: '104.164.49.38', port: 7693, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1863ms' },
-  { host: '198.46.161.42', port: 5092, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1865ms' },
-  { host: '191.96.254.138', port: 6185, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1916ms' },
-  { host: '23.26.71.145', port: 5628, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '2013ms' }
-];
+// Phone Tunnel Management
+const connectedPhones = new Map(); // phoneId -> { ws, name, connectedAt }
+const activeTunnels = new Map();   // tunnelId -> net.Socket
+let phoneCounter = 0;
+let tunnelCounter = 0;
 
-let currentProxyIndex = 0;
-
-function getActiveProxy() {
-  return PROXIES[currentProxyIndex % PROXIES.length];
+function getAvailablePhone() {
+  const phones = Array.from(connectedPhones.values()).filter(p => p.ws.readyState === 1);
+  if (phones.length === 0) return null;
+  phoneCounter = (phoneCounter + 1) % phones.length;
+  return phones[phoneCounter];
 }
 
-function rotateToNextProxy() {
-  currentProxyIndex = (currentProxyIndex + 1) % PROXIES.length;
-  log(`Rotated to proxy: ${getActiveProxy().host}:${getActiveProxy().port}`);
-}
+// 1. Internal HTTP & HTTPS CONNECT Proxy Server
+// Puppeteer connects here -> traffic is piped over WebSocket to your Phone -> Phone fetches from YouTube
+const localProxyServer = http.createServer((req, res) => {
+  const phone = getAvailablePhone();
+  if (!phone) {
+    res.writeHead(503, { 'Content-Type': 'text/plain' });
+    res.end('No phones connected in pool.');
+    return;
+  }
 
+  const reqUrl = url.parse(req.url);
+  const tunnelId = 'tun_' + (++tunnelCounter) + '_' + Date.now();
+  
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    const fullBody = Buffer.concat(chunks).toString('base64');
+    phone.ws.send(JSON.stringify({
+      type: 'http_request',
+      tunnelId,
+      method: req.method,
+      host: reqUrl.hostname,
+      port: reqUrl.port || 80,
+      path: reqUrl.path,
+      headers: req.headers,
+      body: fullBody
+    }));
+  });
+
+  const responseHandler = (msg) => {
+    if (msg.tunnelId === tunnelId && msg.type === 'http_response') {
+      res.writeHead(msg.status, msg.headers);
+      if (msg.body) {
+        res.end(Buffer.from(msg.body, 'base64'));
+      } else {
+        res.end();
+      }
+      activeTunnels.delete(tunnelId);
+    }
+  };
+  activeTunnels.set(tunnelId, { res, handler: responseHandler });
+});
+
+// HTTPS CONNECT Tunnel Handling
+localProxyServer.on('connect', (req, clientSocket, head) => {
+  const phone = getAvailablePhone();
+  if (!phone) {
+    clientSocket.write('HTTP/1.1 503 No Phone In Pool\r\n\r\n');
+    clientSocket.end();
+    return;
+  }
+
+  const { port, hostname } = url.parse(`//${req.url}`, false, true);
+  const targetPort = port || 443;
+  const tunnelId = 'tun_' + (++tunnelCounter) + '_' + Date.now();
+
+  activeTunnels.set(tunnelId, clientSocket);
+
+  // Tell Phone to open TCP connection to target host
+  phone.ws.send(JSON.stringify({
+    type: 'tcp_open',
+    tunnelId,
+    host: hostname,
+    port: targetPort
+  }));
+
+  clientSocket.on('data', chunk => {
+    if (phone.ws.readyState === 1) {
+      phone.ws.send(JSON.stringify({
+        type: 'tcp_data',
+        tunnelId,
+        data: chunk.toString('base64')
+      }));
+    }
+  });
+
+  clientSocket.on('close', () => {
+    if (phone.ws.readyState === 1) {
+      phone.ws.send(JSON.stringify({ type: 'tcp_close', tunnelId }));
+    }
+    activeTunnels.delete(tunnelId);
+  });
+
+  clientSocket.on('error', () => {
+    activeTunnels.delete(tunnelId);
+  });
+});
+
+localProxyServer.listen(PROXY_PORT, '127.0.0.1', () => {
+  log(`Internal Proxy listening on 127.0.0.1:${PROXY_PORT}`);
+});
+
+// 2. HTTP Main Server & WebSocket Hub
+const mainServer = http.createServer(app);
+const wss = new WebSocketServer({ server: mainServer, path: '/phone-tunnel' });
+
+wss.on('connection', (ws, req) => {
+  const phoneId = 'phone_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  log(`[Phone Pool] New phone connected from IP: ${clientIp} (ID: ${phoneId})`);
+
+  connectedPhones.set(phoneId, {
+    id: phoneId,
+    ws,
+    name: 'Phone ' + (connectedPhones.size + 1),
+    ip: clientIp,
+    connectedAt: new Date().toISOString()
+  });
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+
+      // Handle Phone Identification
+      if (msg.type === 'register') {
+        const p = connectedPhones.get(phoneId);
+        if (p && msg.name) p.name = msg.name;
+        log(`[Phone Pool] Phone registered as: "${p ? p.name : msg.name}"`);
+        ws.send(JSON.stringify({ type: 'registered', phoneId }));
+        return;
+      }
+
+      // Handle TCP Connection Established
+      if (msg.type === 'tcp_connected') {
+        const clientSocket = activeTunnels.get(msg.tunnelId);
+        if (clientSocket && !clientSocket.destroyed) {
+          clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        }
+        return;
+      }
+
+      // Handle Data arriving from Phone
+      if (msg.type === 'tcp_data') {
+        const clientSocket = activeTunnels.get(msg.tunnelId);
+        if (clientSocket && !clientSocket.destroyed) {
+          clientSocket.write(Buffer.from(msg.data, 'base64'));
+        }
+        return;
+      }
+
+      // Handle TCP Close
+      if (msg.type === 'tcp_close') {
+        const clientSocket = activeTunnels.get(msg.tunnelId);
+        if (clientSocket) {
+          clientSocket.end();
+          activeTunnels.delete(msg.tunnelId);
+        }
+        return;
+      }
+
+    } catch (e) {
+      log('WebSocket message parsing error:', e.message);
+    }
+  });
+
+  ws.on('close', () => {
+    log(`[Phone Pool] Phone disconnected (ID: ${phoneId})`);
+    connectedPhones.delete(phoneId);
+  });
+
+  ws.on('error', (err) => {
+    log(`[Phone Pool] Error on phone ${phoneId}: ${err.message}`);
+    connectedPhones.delete(phoneId);
+  });
+});
+
+// Minimal Chromium flags
 const MINIMAL_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
@@ -62,7 +222,8 @@ const MINIMAL_ARGS = [
   '--metrics-recording-only',
   '--autoplay-policy=no-user-gesture-required',
   '--disable-blink-features=AutomationControlled',
-  '--window-size=1280,720'
+  '--window-size=1280,720',
+  `--proxy-server=http://127.0.0.1:${PROXY_PORT}` // Routes Chromium directly through the Phone Pool!
 ];
 
 function normalizeYouTubeUrl(rawUrl) {
@@ -113,7 +274,7 @@ let currentStatus = {
   state: 'idle',
   url: null,
   title: null,
-  activeProxy: null,
+  phonesOnline: 0,
   isLoggedIn: false,
   startedAt: null,
   lastScanAt: null
@@ -121,7 +282,7 @@ let currentStatus = {
 
 async function closeBrowserSession() {
   if (currentBrowser) {
-    log('Closing browser session to free memory and stop proxy data usage...');
+    log('Closing browser session to free memory...');
     try { await currentBrowser.close(); } catch (e) {}
     currentBrowser = null;
     currentPage = null;
@@ -135,65 +296,51 @@ async function closeBrowserSession() {
 }
 
 async function startPlayback(rawUrl) {
-  if (isStarting) {
-    log('Playback launch already in progress, skipping duplicate launch.');
-    return;
-  }
+  if (isStarting) return;
   isStarting = true;
 
   const targetUrl = normalizeYouTubeUrl(rawUrl);
-  activePlayingUrl = targetUrl; // Immediately lock URL to prevent re-triggering during navigation
-  const proxy = getActiveProxy();
-  log(`Starting playback session for: ${targetUrl} via fastest proxy ${proxy.host}:${proxy.port} (${proxy.ping})`);
+  activePlayingUrl = targetUrl;
   await closeBrowserSession();
 
   try {
-    const browserArgs = [
-      ...MINIMAL_ARGS,
-      `--proxy-server=http://${proxy.host}:${proxy.port}`
-    ];
+    const availablePhone = getAvailablePhone();
+    if (!availablePhone) {
+      log('[Playback Warning] No phone connected in the pool! Waiting for a phone to connect...');
+      return;
+    }
+
+    log(`Starting playback session for: ${targetUrl} via phone: "${availablePhone.name}"`);
 
     currentBrowser = await puppeteer.launch({
       headless: 'new',
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: browserArgs,
+      args: MINIMAL_ARGS,
       defaultViewport: { width: 1280, height: 720 }
     });
 
     currentPage = await currentBrowser.newPage();
 
-    // Authenticate with the Webshare proxy
-    await currentPage.authenticate({
-      username: proxy.user,
-      password: proxy.pass
-    });
-
-    // Mask bot fingerprint
     await currentPage.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
     await currentPage.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       window.chrome = { runtime: {} };
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
     });
 
-    // Set Cookies for both .youtube.com and .google.com
+    // Inject Cookies
     const cookies = sanitizeCookies(getCookies());
-    let cookiesSet = 0;
     for (const c of cookies) {
       try {
         await currentPage.setCookie(c);
-        cookiesSet++;
         if (c.domain === '.youtube.com') {
           await currentPage.setCookie({ ...c, domain: '.google.com' }).catch(() => {});
         }
       } catch (err) {}
     }
-    log(`Injected ${cookiesSet}/${cookies.length} authentication cookies.`);
 
-    // Bandwidth saver: block heavy images and web fonts so your 1GB lasts 30+ hours!
+    // Block heavy assets
     await currentPage.setRequestInterception(true);
     currentPage.on('request', (req) => {
       const type = req.resourceType();
@@ -204,11 +351,11 @@ async function startPlayback(rawUrl) {
       }
     });
 
-    log(`Navigating to ${targetUrl} through proxy ${proxy.host}...`);
+    log(`Navigating to ${targetUrl} through Phone Tunnel...`);
     try {
       await currentPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
     } catch (navErr) {
-      log(`Navigation note (${navErr.message}) - continuing with page hydration...`);
+      log(`Navigation note (${navErr.message}) - continuing...`);
     }
 
     // Dismiss popups
@@ -216,18 +363,19 @@ async function startPlayback(rawUrl) {
       const buttons = Array.from(document.querySelectorAll('button, ytd-button-renderer'));
       for (const btn of buttons) {
         const txt = (btn.innerText || '').toLowerCase();
-        if (txt.includes('accept') || txt.includes('agree') || txt.includes('dismiss') || txt.includes('reject')) {
+        if (txt.includes('accept') || txt.includes('agree') || txt.includes('dismiss')) {
           btn.click();
           break;
         }
       }
     }).catch(() => {});
 
-    // Wait for video element
     await currentPage.waitForSelector('video', { timeout: 30000 }).catch(() => {});
 
-    // Force 144p resolution, unmute and play
+    // Force 144p & play
     const evalResult = await currentPage.evaluate(() => {
+      const largeBtn = document.querySelector('.ytp-large-play-button');
+      if (largeBtn) largeBtn.click();
       const v = document.querySelector('video');
       let playStarted = false;
       if (v) {
@@ -241,47 +389,41 @@ async function startPlayback(rawUrl) {
         if (p.setPlaybackQualityRange) p.setPlaybackQualityRange('tiny', 'tiny');
       }
 
-      const avatar = document.querySelector('button#avatar-btn, #avatar-btn, ytd-topbar-menu-button-renderer img, button[aria-label*="Account"]');
-      const signInBtn = document.querySelector('a[href*="signin"], ytd-button-renderer a[href*="accounts.google.com"]');
-
+      const avatar = document.querySelector('button#avatar-btn, #avatar-btn, ytd-topbar-menu-button-renderer img');
       return {
         playStarted,
         isLoggedIn: !!avatar,
-        hasSignInBtn: !!signInBtn,
         title: document.title
       };
     }).catch(e => ({ error: e.message }));
 
     const title = evalResult.title || (await currentPage.title().catch(() => targetUrl));
-    activePlayingUrl = rawUrl;
+    activePlayingUrl = targetUrl;
     currentStatus = {
       state: 'playing',
       url: targetUrl,
       title: title,
-      activeProxy: `${proxy.host}:${proxy.port}`,
+      phonesOnline: connectedPhones.size,
+      activePhoneUsed: availablePhone.name,
       isLoggedIn: evalResult.isLoggedIn || false,
       startedAt: new Date().toISOString(),
       lastScanAt: new Date().toISOString()
     };
 
-    log(`Playback confirmed! Title: "${title}". Account logged in: ${evalResult.isLoggedIn}. Forced 144p resolution. Active Proxy: ${proxy.host}:${proxy.port}`);
+    log(`>>> Playback Verified! Title: "${title}". Phone: "${availablePhone.name}". 144p Forced. <<<`);
 
   } catch (err) {
-    log(`Playback error on proxy ${proxy.host}: ${err.message}`);
-    rotateToNextProxy(); // Automatically try the next fastest proxy if this one fails
+    log(`Playback error: ${err.message}`);
     await closeBrowserSession();
   } finally {
     isStarting = false;
   }
 }
 
-// Keep video active & 144p
 async function keepVideoPlaying() {
   if (currentPage && !currentPage.isClosed()) {
     try {
       await currentPage.evaluate(() => {
-        const largeBtn = document.querySelector('.ytp-large-play-button');
-        if (largeBtn) largeBtn.click();
         const v = document.querySelector('video');
         if (v && v.paused) {
           v.muted = true;
@@ -301,8 +443,8 @@ async function keepVideoPlaying() {
 // 60-second scan loop
 async function scanApiQueue() {
   currentStatus.lastScanAt = new Date().toISOString();
+  currentStatus.phonesOnline = connectedPhones.size;
   const freshUrl = `${VERCEL_API_URL}?t=${Date.now()}`;
-  log(`Checking Vercel API: ${freshUrl}`);
 
   try {
     const res = await fetch(freshUrl, {
@@ -310,10 +452,7 @@ async function scanApiQueue() {
       headers: { 'Cache-Control': 'no-cache', 'Accept': 'application/json' }
     });
 
-    if (!res.ok) {
-      log(`Vercel API returned HTTP ${res.status}`);
-      return;
-    }
+    if (!res.ok) return;
 
     const data = await res.json();
     const rawTarget = data && data.url ? data.url.trim() : null;
@@ -321,19 +460,16 @@ async function scanApiQueue() {
 
     if (!targetUrl) {
       if (currentBrowser) {
-        log('URL in API is empty. Closing browser to preserve bandwidth and go idle.');
+        log('URL in API is empty. Closing browser to go idle.');
         await closeBrowserSession();
-      } else {
-        log('No URL in API. Remaining IDLE.');
       }
       return;
     }
 
     if (activePlayingUrl === targetUrl && currentBrowser) {
-      log(`URL unchanged (${targetUrl}). Verifying video playback is active...`);
       await keepVideoPlaying();
     } else {
-      log(`Target URL detected: ${targetUrl}. Starting player with fastest proxy.`);
+      log(`Target URL detected: ${targetUrl}. Checking phone pool...`);
       await startPlayback(targetUrl);
     }
 
@@ -345,14 +481,30 @@ async function scanApiQueue() {
 setInterval(scanApiQueue, SCAN_INTERVAL_MS);
 setTimeout(scanApiQueue, 4000);
 
+// Status API
 app.get('/', (req, res) => {
+  const phoneList = Array.from(connectedPhones.values()).map(p => ({
+    name: p.name,
+    ip: p.ip,
+    connectedAt: p.connectedAt
+  }));
+
   res.json({
-    service: 'Render Auto-Scanner & Player',
+    service: 'Render Multi-Phone YouTube Player Hub',
     status: currentStatus,
-    activeProxy: getActiveProxy().host + ':' + getActiveProxy().port,
-    proxyCount: PROXIES.length,
+    phonesOnlineCount: phoneList.length,
+    connectedPhones: phoneList,
     scanInterval: '60 seconds'
   });
+});
+
+app.get('/phones', (req, res) => {
+  const phoneList = Array.from(connectedPhones.values()).map(p => ({
+    name: p.name,
+    ip: p.ip,
+    connectedAt: p.connectedAt
+  }));
+  res.json({ count: phoneList.length, phones: phoneList });
 });
 
 app.get('/health', (req, res) => {
@@ -377,6 +529,6 @@ app.get('/screenshot', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  log(`Render service listening on port ${PORT}`);
+mainServer.listen(PORT, () => {
+  log(`Render Multi-Phone Hub running on port ${PORT}`);
 });
