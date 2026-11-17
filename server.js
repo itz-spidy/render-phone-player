@@ -190,10 +190,17 @@ async function keepVideoPlaying() {
 // Core Automatic Scan: checks Vercel API every 60 seconds
 async function scanApiQueue() {
   currentStatus.lastScanAt = new Date().toISOString();
-  console.log(`[Auto-Scan 60s] Checking API at: ${VERCEL_API_URL}`);
+  const freshUrl = `${VERCEL_API_URL}?t=${Date.now()}`;
+  console.log(`[Auto-Scan 60s] Checking API at: ${freshUrl}`);
 
   try {
-    const res = await fetch(VERCEL_API_URL, { headers: { 'Accept': 'application/json' } });
+    const res = await fetch(freshUrl, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Accept': 'application/json'
+      }
+    });
     if (!res.ok) {
       console.warn(`[Auto-Scan 60s] API returned status ${res.status}`);
       return;
