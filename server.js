@@ -27,22 +27,44 @@ function log(...args) {
 }
 
 // Phone Tunnel Management
-const connectedPhones = new Map(); // phoneId -> { ws, name, connectedAt }
+const connectedPhones = new Map(); // phoneId -> { id, ws, name, ip, city, region, country, isp, location, connectedAt }
 const activeTunnels = new Map();   // tunnelId -> net.Socket
-let phoneCounter = 0;
 let tunnelCounter = 0;
+let activeSessionPhoneId = null;
 
-function getAvailablePhone() {
-  const phones = Array.from(connectedPhones.values()).filter(p => p.ws.readyState === 1);
-  if (phones.length === 0) return null;
-  phoneCounter = (phoneCounter + 1) % phones.length;
-  return phones[phoneCounter];
+function isDatacenter(p) {
+  if (!p) return false;
+  const s = `${p.isp || ''} ${p.name || ''} ${p.location || ''}`.toLowerCase();
+  return s.includes('railway') || s.includes('amazon') || s.includes('aws') || 
+         s.includes('google') || s.includes('digitalocean') || s.includes('oracle') || 
+         s.includes('azure') || s.includes('linode') || s.includes('hetzner') ||
+         s.includes('datacenter') || s.includes('hosting') || s.includes('server');
+}
+
+function getSessionPhone() {
+  const onlinePhones = Array.from(connectedPhones.values()).filter(p => p.ws && p.ws.readyState === 1);
+  if (onlinePhones.length === 0) return null;
+
+  // 1. If currently pinned session phone is still online, USE IT (100% sticky)!
+  if (activeSessionPhoneId) {
+    const existing = onlinePhones.find(p => p.id === activeSessionPhoneId);
+    if (existing) return existing;
+  }
+
+  // 2. Otherwise pick the best device: prefer residential/mobile over datacenter
+  const residential = onlinePhones.filter(p => !isDatacenter(p));
+  const chosen = residential.length > 0 ? residential[0] : onlinePhones[0];
+
+  activeSessionPhoneId = chosen.id;
+  currentStatus.activePhoneUsed = chosen.name;
+  log(`[Session Proxy] Pinned browser session to device: "${chosen.name}" (IP: ${chosen.ip}, Location: ${chosen.location}, ISP: ${chosen.isp})`);
+  return chosen;
 }
 
 // 1. Internal HTTP & HTTPS CONNECT Proxy Server
-// Puppeteer connects here -> traffic is piped over WebSocket to your Phone -> Phone fetches from YouTube
+// Puppeteer connects here -> traffic is piped over WebSocket to the pinned Phone -> Phone fetches from YouTube
 const localProxyServer = http.createServer((req, res) => {
-  const phone = getAvailablePhone();
+  const phone = getSessionPhone();
   if (!phone) {
     res.writeHead(503, { 'Content-Type': 'text/plain' });
     res.end('No phones connected in pool.');
@@ -82,9 +104,9 @@ const localProxyServer = http.createServer((req, res) => {
   activeTunnels.set(tunnelId, { res, handler: responseHandler });
 });
 
-// HTTPS CONNECT Tunnel Handling
+// HTTPS CONNECT Tunnel Handling - STICKY to current session device!
 localProxyServer.on('connect', (req, clientSocket, head) => {
-  const phone = getAvailablePhone();
+  const phone = getSessionPhone();
   if (!phone) {
     clientSocket.write('HTTP/1.1 503 No Phone In Pool\r\n\r\n');
     clientSocket.end();
@@ -216,6 +238,19 @@ wss.on('connection', (ws, req) => {
             p.location = [p.city, p.region, p.country].filter(Boolean).join(', ') || 'Unknown';
           }
           log(`[Phone Pool] Phone registered: "${p.name}" (IP: ${p.ip}, Location: ${p.location}, ISP: ${p.isp})`);
+
+          // If a residential phone connects and active proxy was empty or datacenter, switch to residential!
+          if (!isDatacenter(p)) {
+            const curActive = connectedPhones.get(activeSessionPhoneId);
+            if (!curActive || isDatacenter(curActive)) {
+              log(`[Session Proxy] Mobile/Residential device "${p.name}" connected! Pinning session proxy to "${p.name}"...`);
+              activeSessionPhoneId = p.id;
+              currentStatus.activePhoneUsed = p.name;
+              if (activePlayingUrl) {
+                startPlayback(activePlayingUrl).catch(() => {});
+              }
+            }
+          }
         }
         ws.send(JSON.stringify({ type: 'registered', phoneId }));
         return;
@@ -257,6 +292,15 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     log(`[Phone Pool] Phone disconnected (ID: ${phoneId})`);
     connectedPhones.delete(phoneId);
+    if (activeSessionPhoneId === phoneId) {
+      log(`[Session Proxy] Active phone disconnected! Failover to another device...`);
+      activeSessionPhoneId = null;
+      const nextPhone = getSessionPhone();
+      if (nextPhone && activePlayingUrl) {
+        log(`[Session Proxy] Failover to "${nextPhone.name}". Restarting playback...`);
+        startPlayback(activePlayingUrl).catch(() => {});
+      }
+    }
   });
 
   ws.on('error', (err) => {
@@ -369,13 +413,16 @@ async function startPlayback(rawUrl) {
   await closeBrowserSession();
 
   try {
-    const availablePhone = getAvailablePhone();
+    const availablePhone = getSessionPhone();
     if (!availablePhone) {
       log('[Playback Warning] No phone connected in the pool! Waiting for a phone to connect...');
       return;
     }
 
-    log(`Starting playback session for: ${targetUrl} via phone: "${availablePhone.name}"`);
+    activeSessionPhoneId = availablePhone.id;
+    currentStatus.activePhoneUsed = availablePhone.name;
+
+    log(`Starting playback session for: ${targetUrl} via phone: "${availablePhone.name}" (${availablePhone.ip})`);
 
     currentBrowser = await puppeteer.launch({
       headless: 'new',
@@ -424,7 +471,7 @@ async function startPlayback(rawUrl) {
       }
     });
 
-    log(`Navigating to ${targetUrl} through Phone Tunnel...`);
+    log(`Navigating to ${targetUrl} through Phone Tunnel (${availablePhone.name})...`);
     try {
       await currentPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
     } catch (navErr) {
@@ -445,7 +492,7 @@ async function startPlayback(rawUrl) {
 
     await currentPage.waitForSelector('video', { timeout: 30000 }).catch(() => {});
 
-    // Force 144p & play
+    // Force 144p & play & detect login
     const evalResult = await currentPage.evaluate(() => {
       const largeBtn = document.querySelector('.ytp-large-play-button');
       if (largeBtn) largeBtn.click();
@@ -462,10 +509,15 @@ async function startPlayback(rawUrl) {
         if (p.setPlaybackQualityRange) p.setPlaybackQualityRange('tiny', 'tiny');
       }
 
-      const avatar = document.querySelector('button#avatar-btn, #avatar-btn, ytd-topbar-menu-button-renderer img');
+      const avatar = document.querySelector('button#avatar-btn, #avatar-btn, ytd-masthead #avatar-btn, yt-img-shadow#avatar, ytd-topbar-menu-button-renderer img');
+      const signInBtn = document.querySelector('a[href*="accounts.google.com/ServiceLogin"], ytd-button-renderer a[href*="signin"], #buttons ytd-button-renderer a');
+      const isLoggedIn = !!avatar && !signInBtn;
+
       return {
         playStarted,
-        isLoggedIn: !!avatar,
+        isLoggedIn,
+        hasAvatar: !!avatar,
+        hasSignIn: !!signInBtn,
         title: document.title
       };
     }).catch(e => ({ error: e.message }));
@@ -478,12 +530,13 @@ async function startPlayback(rawUrl) {
       title: title,
       phonesOnline: connectedPhones.size,
       activePhoneUsed: availablePhone.name,
-      isLoggedIn: evalResult.isLoggedIn || false,
+      activeSessionPhoneId: availablePhone.id,
+      isLoggedIn: Boolean(evalResult.isLoggedIn || evalResult.hasAvatar),
       startedAt: new Date().toISOString(),
       lastScanAt: new Date().toISOString()
     };
 
-    log(`>>> Playback Verified! Title: "${title}". Phone: "${availablePhone.name}". 144p Forced. <<<`);
+    log(`>>> Playback Verified! Title: "${title}". Phone: "${availablePhone.name}" (${availablePhone.ip}). LoggedIn: ${currentStatus.isLoggedIn}. 144p Forced. <<<`);
 
   } catch (err) {
     log(`Playback error: ${err.message}`);
@@ -588,9 +641,29 @@ app.delete('/api/stream', async (req, res) => {
   }
 });
 
+// Switch pinned device endpoint
+app.post('/api/select-phone', async (req, res) => {
+  const { phoneId } = req.body || {};
+  if (!phoneId || !connectedPhones.has(phoneId)) {
+    return res.status(404).json({ error: 'Device not found in pool' });
+  }
+  const chosen = connectedPhones.get(phoneId);
+  activeSessionPhoneId = phoneId;
+  currentStatus.activePhoneUsed = chosen.name;
+  log(`[Device Switch] Manually pinned browser session to "${chosen.name}" (${chosen.ip})`);
+
+  if (activePlayingUrl) {
+    const url = activePlayingUrl;
+    startPlayback(url).catch(() => {});
+  }
+  res.json({ success: true, activePhone: chosen.name, phoneId: chosen.id });
+});
+
 // JSON Status endpoint
 app.get('/api/status', (req, res) => {
+  const activePhone = getSessionPhone();
   const phoneList = Array.from(connectedPhones.values()).map(p => ({
+    id: p.id,
     name: p.name,
     ip: p.ip,
     location: p.location,
@@ -598,6 +671,8 @@ app.get('/api/status', (req, res) => {
     region: p.region,
     country: p.country,
     isp: p.isp,
+    isDatacenter: isDatacenter(p),
+    isActive: activeSessionPhoneId === p.id,
     connectedAt: p.connectedAt
   }));
 
@@ -605,6 +680,8 @@ app.get('/api/status', (req, res) => {
     service: 'Render Multi-Phone YouTube Player Hub',
     status: currentStatus,
     activePlayingUrl,
+    activeSessionPhoneId,
+    activePhoneUsed: activePhone ? activePhone.name : null,
     phonesOnlineCount: phoneList.length,
     connectedPhones: phoneList,
     scanInterval: '60 seconds'
@@ -621,7 +698,9 @@ app.get('/', (req, res) => {
 
 app.get('/phones', (req, res) => {
   if (req.query.json === '1' || req.headers.accept === 'application/json') {
+    const activePhone = getSessionPhone();
     const phoneList = Array.from(connectedPhones.values()).map(p => ({
+      id: p.id,
       name: p.name,
       ip: p.ip,
       location: p.location,
@@ -629,6 +708,8 @@ app.get('/phones', (req, res) => {
       region: p.region,
       country: p.country,
       isp: p.isp,
+      isDatacenter: isDatacenter(p),
+      isActive: activeSessionPhoneId === p.id,
       connectedAt: p.connectedAt
     }));
     return res.json({ count: phoneList.length, phones: phoneList });
@@ -642,10 +723,12 @@ app.get('/api/auth-debug', async (req, res) => {
   }
   try {
     const info = await currentPage.evaluate(() => {
-      const signInBtn = document.querySelector('a[href*="accounts.google.com/ServiceLogin"], ytd-button-renderer a[href*="signin"]');
-      const avatarBtn = document.querySelector('button#avatar-btn, #avatar-btn, ytd-topbar-menu-button-renderer img');
+      const signInBtn = document.querySelector('a[href*="accounts.google.com/ServiceLogin"], ytd-button-renderer a[href*="signin"], #buttons ytd-button-renderer a');
+      const avatarBtn = document.querySelector('button#avatar-btn, #avatar-btn, ytd-masthead #avatar-btn, yt-img-shadow#avatar, ytd-topbar-menu-button-renderer img');
       const masthead = document.querySelector('ytd-masthead') ? document.querySelector('ytd-masthead').innerText : 'No masthead';
       return {
+        title: document.title,
+        url: window.location.href,
         hasSignInButton: !!signInBtn,
         signInButtonText: signInBtn ? signInBtn.innerText : null,
         hasAvatarButton: !!avatarBtn,

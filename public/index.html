@@ -110,20 +110,20 @@
     <!-- Stat Badges -->
     <div class="stats-row">
       <div class="stat-card">
-        <div class="stat-label">Connected Phones</div>
+        <div class="stat-label">Connected Pool</div>
         <div class="stat-val" id="statPhoneCount" style="color: #60a5fa;">0 Online</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Active Tunnel</div>
+        <div class="stat-val" id="statActiveDevice" style="color: #38bdf8; font-size: 1.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">None</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Playback State</div>
         <div class="stat-val" id="statPlaybackState" style="color: #10b981;">IDLE</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Stream Quality</div>
-        <div class="stat-val" style="color: #f59e0b;">144p Muted</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Uptime Pings</div>
-        <div class="stat-val" style="color: #a78bfa;">Active (5m)</div>
+        <div class="stat-label">YouTube Account</div>
+        <div class="stat-val" id="statAuth" style="color: #f59e0b; font-size: 1.1rem;">Checking...</div>
       </div>
     </div>
 
@@ -259,6 +259,24 @@
       }
     }
 
+    async function selectPhone(phoneId) {
+      try {
+        const res = await fetch('/api/select-phone', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phoneId })
+        });
+        const d = await res.json();
+        if (d.success) {
+          refreshData();
+        } else {
+          alert('Device switch failed: ' + (d.error || 'Unknown'));
+        }
+      } catch (e) {
+        alert('Switch failed: ' + e.message);
+      }
+    }
+
     // Refresh Preview Image
     function updateSnapshot() {
       const img = document.getElementById('liveSnapshot');
@@ -300,17 +318,43 @@
           displayUrl.innerHTML = '<span style="color:var(--text-muted)">None (Idle)</span>';
         }
 
+        // Update active device & auth
+        const activeDevElem = document.getElementById('statActiveDevice');
+        if (activeDevElem) {
+          if (d.activePhoneUsed) {
+            activeDevElem.textContent = d.activePhoneUsed;
+            activeDevElem.style.color = '#38bdf8';
+          } else {
+            activeDevElem.textContent = 'None (Waiting)';
+            activeDevElem.style.color = '#8b9bb4';
+          }
+        }
+
+        const authElem = document.getElementById('statAuth');
+        if (authElem) {
+          if (d.status && d.status.isLoggedIn) {
+            authElem.textContent = '✓ Logged In';
+            authElem.style.color = '#10b981';
+          } else if (state === 'PLAYING') {
+            authElem.textContent = 'Guest / Anonymous';
+            authElem.style.color = '#f59e0b';
+          } else {
+            authElem.textContent = 'Idle';
+            authElem.style.color = '#8b9bb4';
+          }
+        }
+
         // Render phones
         const container = document.getElementById('phonesContainer');
         if (d.connectedPhones && d.connectedPhones.length > 0) {
           container.innerHTML = d.connectedPhones.map(p => `
-            <div class="phone-item">
+            <div class="phone-item" style="${p.isActive ? 'border-color: #3b82f6; background: #0c172e;' : ''}">
               <div class="phone-top">
-                <span>📱 ${p.name || 'Phone'}</span>
-                <span style="color: #10b981; font-size: 0.75rem;">● Active</span>
+                <span>📱 ${p.name || 'Phone'} ${p.isActive ? '<span style="background:rgba(59,130,246,0.25);color:#60a5fa;font-size:0.7rem;padding:2px 7px;border-radius:4px;margin-left:6px;border:1px solid rgba(96,165,250,0.3);">ACTIVE TUNNEL</span>' : ''}</span>
+                ${!p.isActive ? `<button onclick="selectPhone('${p.id}')" style="background:#232d42;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:0.75rem;cursor:pointer;">Use Tunnel</button>` : '<span style="color: #10b981; font-size: 0.75rem; font-weight: 700;">● Pinned</span>'}
               </div>
               <div class="phone-details">
-                <span class="k">IP:</span><span class="v ip-tag">${p.ip || 'Unknown'}</span>
+                <span class="k">IP:</span><span class="v ip-tag">${p.ip || 'Unknown'} ${p.isDatacenter ? '<span style="color:#f59e0b;font-size:0.7rem;">(Datacenter)</span>' : '<span style="color:#10b981;font-size:0.7rem;">(Residential)</span>'}</span>
                 <span class="k">Loc:</span><span class="v">${p.location || 'Detecting...'}</span>
                 <span class="k">ISP:</span><span class="v">${p.isp || 'Mobile Network'}</span>
                 <span class="k">Joined:</span><span class="v">${new Date(p.connectedAt).toLocaleTimeString()}</span>
