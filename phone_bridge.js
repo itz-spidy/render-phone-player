@@ -1,5 +1,6 @@
 const WebSocket = require('ws');
 const net = require('net');
+const http = require('http');
 
 const SERVER_URL = process.argv[2] || process.env.RENDER_URL;
 const PHONE_NAME = process.argv[3] || process.env.PHONE_NAME || ('Phone-' + Math.floor(Math.random() * 1000));
@@ -10,15 +11,55 @@ if (!SERVER_URL) {
   process.exit(1);
 }
 
+function fetchIpInfo() {
+  return new Promise((resolve) => {
+    const req = http.get('http://ip-api.com/json', { timeout: 4000 }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed && parsed.status === 'success') {
+            resolve({
+              ip: parsed.query,
+              country: parsed.country,
+              countryCode: parsed.countryCode,
+              city: parsed.city,
+              region: parsed.regionName,
+              isp: parsed.isp
+            });
+            return;
+          }
+        } catch (_) {}
+        resolve(null);
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
+
 const activeSockets = new Map();
 
 function connect() {
   console.log(`[Bridge] Connecting to Render Hub: ${SERVER_URL} as "${PHONE_NAME}"...`);
   const ws = new WebSocket(SERVER_URL);
 
-  ws.on('open', () => {
-    console.log(`[Bridge] Connected successfully! Registering as "${PHONE_NAME}"...`);
-    ws.send(JSON.stringify({ type: 'register', name: PHONE_NAME }));
+  ws.on('open', async () => {
+    console.log(`[Bridge] Connected successfully! Detecting public IP & location...`);
+    const ipInfo = await fetchIpInfo();
+    if (ipInfo) {
+      console.log(`[Bridge] IP: ${ipInfo.ip} | Location: ${ipInfo.city}, ${ipInfo.country} (${ipInfo.isp})`);
+    } else {
+      console.log(`[Bridge] Location check skipped/timed out; Render will detect IP.`);
+    }
+
+    console.log(`[Bridge] Registering as "${PHONE_NAME}"...`);
+    ws.send(JSON.stringify({
+      type: 'register',
+      name: PHONE_NAME,
+      ipInfo: ipInfo || null
+    }));
   });
 
   ws.on('message', (raw) => {
