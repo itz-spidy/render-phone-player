@@ -303,7 +303,8 @@ async function scanApiQueue() {
     }
 
     const data = await res.json();
-    const targetUrl = data && data.url ? data.url.trim() : null;
+    const rawTarget = data && data.url ? data.url.trim() : null;
+    const targetUrl = normalizeYouTubeUrl(rawTarget);
 
     if (!targetUrl) {
       if (currentBrowser) {
