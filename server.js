@@ -62,6 +62,7 @@ function getCookies() {
 
 let currentBrowser = null;
 let currentPage = null;
+let playbackInterval = null;
 let currentStatus = {
   playing: false,
   url: null,
@@ -126,7 +127,11 @@ app.all('/play', async (req, res) => {
   console.log(`[API] Triggering playback for: ${targetUrl}`);
 
   try {
-    // 1. Terminate previous browser instance
+    if (playbackInterval) {
+      clearInterval(playbackInterval);
+      playbackInterval = null;
+    }
+
     if (currentBrowser) {
       console.log('Releasing previous browser instance...');
       try { await currentBrowser.close(); } catch (e) {}
@@ -134,7 +139,6 @@ app.all('/play', async (req, res) => {
       currentPage = null;
     }
 
-    // 2. Launch browser
     currentBrowser = await puppeteer.launch({
       headless: 'new',
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -147,13 +151,11 @@ app.all('/play', async (req, res) => {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     );
 
-    // 3. Set cookies
     const cookies = sanitizeCookies(getCookies());
     if (cookies.length > 0) {
       await currentPage.setCookie(...cookies);
     }
 
-    // 4. Intercept: block images and fonts to save memory, allow scripts and video
     await currentPage.setRequestInterception(true);
     currentPage.on('request', (req) => {
       const type = req.resourceType();
@@ -164,10 +166,8 @@ app.all('/play', async (req, res) => {
       }
     });
 
-    // 5. Navigate to YouTube (DOM content loaded - FAST! avoids 502 gateway timeout)
     await currentPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
-    // 6. Dismiss any consent or cookie popups if present
     await currentPage.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('button, ytd-button-renderer'));
       for (const btn of buttons) {
@@ -179,63 +179,44 @@ app.all('/play', async (req, res) => {
       }
     }).catch(() => {});
 
-    // 7. Wait briefly for the <video> element to hydrate
     await currentPage.waitForSelector('video', { timeout: 8000 }).catch(() => {});
-
-    // 8. Force 144p quality, unmute video, and force play
-    const playStatus = await currentPage.evaluate(async () => {
-      const video = document.querySelector('video');
-      if (!video) return { error: 'Video element not yet mounted, starting background hydration' };
-
-      // Force 144p resolution
-      const player = document.getElementById('movie_player');
-      if (player) {
-        if (typeof player.setPlaybackQualityRange === 'function') {
-          player.setPlaybackQualityRange('tiny', 'tiny');
-        }
-        if (typeof player.setPlaybackQuality === 'function') {
-          player.setPlaybackQuality('tiny');
-        }
-      }
-
-      // Mute to permit background playback without user interaction
-      video.muted = true;
-      try {
-        await video.play();
-      } catch (err) {}
-
-      // Click YouTube play button if paused
-      if (video.paused) {
-        const playBtn = document.querySelector('.ytp-play-button');
-        if (playBtn) playBtn.click();
-      }
-
-      return {
-        currentTime: Math.round(video.currentTime),
-        duration: Math.round(video.duration || 0),
-        paused: video.paused,
-        playing: !video.paused
-      };
-    });
 
     const pageTitle = await currentPage.title();
 
     currentStatus = {
-      playing: playStatus.playing || false,
+      playing: true,
       url: targetUrl,
       title: pageTitle,
       startedAt: new Date().toISOString(),
-      currentTime: playStatus.currentTime || 0,
-      duration: playStatus.duration || 0
+      currentTime: 0,
+      duration: 0
     };
+
+    // Auto-keepalive loop: continuously checks every 3 seconds to unpause and enforce 144p
+    playbackInterval = setInterval(async () => {
+      if (currentPage && !currentPage.isClosed()) {
+        try {
+          await currentPage.evaluate(() => {
+            const v = document.querySelector('video');
+            if (v) {
+              v.muted = true;
+              if (v.paused) v.play().catch(() => {});
+            }
+            const p = document.getElementById('movie_player');
+            if (p && typeof p.setPlaybackQualityRange === 'function') {
+              p.setPlaybackQualityRange('tiny', 'tiny');
+            }
+          });
+        } catch (e) {}
+      }
+    }, 3000);
 
     return res.json({
       success: true,
       url: targetUrl,
       title: pageTitle,
-      playback: playStatus,
       screenshotUrl: '/screenshot',
-      message: 'Video launched and streaming on lowest quality (144p).'
+      message: 'Video launched. Continuous 144p playback monitor active.'
     });
 
   } catch (err) {
