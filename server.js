@@ -550,6 +550,14 @@ async function keepVideoPlaying() {
   if (currentPage && !currentPage.isClosed()) {
     try {
       await currentPage.evaluate(() => {
+        // Auto skip video ads
+        const skipBtn = document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern, button.ytp-ad-skip-button-text, .ytp-ad-preview-container');
+        if (skipBtn) skipBtn.click();
+
+        // Dismiss overlay popups / promos
+        const popups = document.querySelectorAll('tp-yt-paper-dialog button, ytd-button-renderer#dismiss-button');
+        popups.forEach(b => b.click());
+
         const v = document.querySelector('video');
         if (v && v.paused) {
           v.muted = true;
