@@ -21,6 +21,31 @@ function log(...args) {
   if (logBuffer.length > 250) logBuffer.shift();
 }
 
+// Proxies sorted from fastest to slowest (benchmarked against YouTube)
+const PROXIES = [
+  { host: '64.137.10.153', port: 5803, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '989ms' },
+  { host: '64.137.96.74', port: 6641, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1033ms' },
+  { host: '84.247.60.125', port: 6095, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1113ms' },
+  { host: '45.38.107.97', port: 6014, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1192ms' },
+  { host: '38.154.185.97', port: 6370, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1587ms' },
+  { host: '198.23.243.226', port: 6361, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1751ms' },
+  { host: '104.164.49.38', port: 7693, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1863ms' },
+  { host: '198.46.161.42', port: 5092, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1865ms' },
+  { host: '191.96.254.138', port: 6185, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '1916ms' },
+  { host: '23.26.71.145', port: 5628, user: 'dptcsqwm', pass: '17gx30fmjdyr', ping: '2013ms' }
+];
+
+let currentProxyIndex = 0;
+
+function getActiveProxy() {
+  return PROXIES[currentProxyIndex % PROXIES.length];
+}
+
+function rotateToNextProxy() {
+  currentProxyIndex = (currentProxyIndex + 1) % PROXIES.length;
+  log(`Rotated to proxy: ${getActiveProxy().host}:${getActiveProxy().port}`);
+}
+
 const MINIMAL_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
@@ -87,6 +112,7 @@ let currentStatus = {
   state: 'idle',
   url: null,
   title: null,
+  activeProxy: null,
   isLoggedIn: false,
   startedAt: null,
   lastScanAt: null
@@ -94,7 +120,7 @@ let currentStatus = {
 
 async function closeBrowserSession() {
   if (currentBrowser) {
-    log('Closing browser session to free memory...');
+    log('Closing browser session to free memory and stop proxy data usage...');
     try { await currentBrowser.close(); } catch (e) {}
     currentBrowser = null;
     currentPage = null;
@@ -109,19 +135,32 @@ async function closeBrowserSession() {
 
 async function startPlayback(rawUrl) {
   const targetUrl = normalizeYouTubeUrl(rawUrl);
-  log(`Starting playback session for: ${targetUrl}`);
+  const proxy = getActiveProxy();
+  log(`Starting playback session for: ${targetUrl} via fastest proxy ${proxy.host}:${proxy.port} (${proxy.ping})`);
   await closeBrowserSession();
 
   try {
+    const browserArgs = [
+      ...MINIMAL_ARGS,
+      `--proxy-server=http://${proxy.host}:${proxy.port}`
+    ];
+
     currentBrowser = await puppeteer.launch({
       headless: 'new',
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: MINIMAL_ARGS,
+      args: browserArgs,
       defaultViewport: { width: 1280, height: 720 }
     });
 
     currentPage = await currentBrowser.newPage();
-    
+
+    // Authenticate with the Webshare proxy
+    await currentPage.authenticate({
+      username: proxy.user,
+      password: proxy.pass
+    });
+
+    // Mask bot fingerprint
     await currentPage.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
@@ -146,7 +185,7 @@ async function startPlayback(rawUrl) {
     }
     log(`Injected ${cookiesSet}/${cookies.length} authentication cookies.`);
 
-    // Block heavy assets
+    // Bandwidth saver: block heavy images and web fonts so your 1GB lasts 30+ hours!
     await currentPage.setRequestInterception(true);
     currentPage.on('request', (req) => {
       const type = req.resourceType();
@@ -157,15 +196,14 @@ async function startPlayback(rawUrl) {
       }
     });
 
-    // Navigate with generous timeout; do not terminate on timeout, allow page to continue hydrating
-    log(`Navigating to ${targetUrl}...`);
+    log(`Navigating to ${targetUrl} through proxy ${proxy.host}...`);
     try {
       await currentPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
     } catch (navErr) {
       log(`Navigation note (${navErr.message}) - continuing with page hydration...`);
     }
 
-    // Dismiss any popups or dialogs
+    // Dismiss popups
     await currentPage.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('button, ytd-button-renderer'));
       for (const btn of buttons) {
@@ -212,20 +250,22 @@ async function startPlayback(rawUrl) {
       state: 'playing',
       url: targetUrl,
       title: title,
+      activeProxy: `${proxy.host}:${proxy.port}`,
       isLoggedIn: evalResult.isLoggedIn || false,
       startedAt: new Date().toISOString(),
       lastScanAt: new Date().toISOString()
     };
 
-    log(`Playback confirmed. Title: "${title}". Account logged in: ${evalResult.isLoggedIn}. Playing at 144p.`);
+    log(`Playback confirmed! Title: "${title}". Account logged in: ${evalResult.isLoggedIn}. Forced 144p resolution. Active Proxy: ${proxy.host}:${proxy.port}`);
 
   } catch (err) {
-    log(`Playback error for ${targetUrl}: ${err.message}`);
+    log(`Playback error on proxy ${proxy.host}: ${err.message}`);
+    rotateToNextProxy(); // Automatically try the next fastest proxy if this one fails
     await closeBrowserSession();
   }
 }
 
-// Ensure video keeps streaming
+// Keep video active & 144p
 async function keepVideoPlaying() {
   if (currentPage && !currentPage.isClosed()) {
     try {
@@ -267,7 +307,7 @@ async function scanApiQueue() {
 
     if (!targetUrl) {
       if (currentBrowser) {
-        log('URL in API is empty. Closing browser to go idle.');
+        log('URL in API is empty. Closing browser to preserve bandwidth and go idle.');
         await closeBrowserSession();
       } else {
         log('No URL in API. Remaining IDLE.');
@@ -279,7 +319,7 @@ async function scanApiQueue() {
       log(`URL unchanged (${targetUrl}). Verifying video playback is active...`);
       await keepVideoPlaying();
     } else {
-      log(`Target URL detected: ${targetUrl}. Starting player.`);
+      log(`Target URL detected: ${targetUrl}. Starting player with fastest proxy.`);
       await startPlayback(targetUrl);
     }
 
@@ -295,7 +335,8 @@ app.get('/', (req, res) => {
   res.json({
     service: 'Render Auto-Scanner & Player',
     status: currentStatus,
-    apiQueueWatched: VERCEL_API_URL,
+    activeProxy: getActiveProxy().host + ':' + getActiveProxy().port,
+    proxyCount: PROXIES.length,
     scanInterval: '60 seconds'
   });
 });
