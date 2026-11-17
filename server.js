@@ -108,6 +108,7 @@ function getCookies() {
 let currentBrowser = null;
 let currentPage = null;
 let activePlayingUrl = null;
+let isStarting = false;
 let currentStatus = {
   state: 'idle',
   url: null,
@@ -134,7 +135,14 @@ async function closeBrowserSession() {
 }
 
 async function startPlayback(rawUrl) {
+  if (isStarting) {
+    log('Playback launch already in progress, skipping duplicate launch.');
+    return;
+  }
+  isStarting = true;
+
   const targetUrl = normalizeYouTubeUrl(rawUrl);
+  activePlayingUrl = targetUrl; // Immediately lock URL to prevent re-triggering during navigation
   const proxy = getActiveProxy();
   log(`Starting playback session for: ${targetUrl} via fastest proxy ${proxy.host}:${proxy.port} (${proxy.ping})`);
   await closeBrowserSession();
@@ -262,6 +270,8 @@ async function startPlayback(rawUrl) {
     log(`Playback error on proxy ${proxy.host}: ${err.message}`);
     rotateToNextProxy(); // Automatically try the next fastest proxy if this one fails
     await closeBrowserSession();
+  } finally {
+    isStarting = false;
   }
 }
 
