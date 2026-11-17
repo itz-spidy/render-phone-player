@@ -330,6 +330,36 @@ const MINIMAL_ARGS = [
   `--proxy-server=http://127.0.0.1:${PROXY_PORT}` // Routes Chromium directly through the Phone Pool!
 ];
 
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || 'AIzaSyDJ349vwNR3MgXRGAzRRS3rQPgV0ETaBlo';
+
+function extractVideoId(rawUrl) {
+  if (!rawUrl) return null;
+  const m = rawUrl.match(/(?:watch\?v=|live\/|embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+async function fetchVideoDetails(videoId) {
+  if (!videoId || !YOUTUBE_API_KEY) return null;
+  try {
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,liveStreamingDetails&id=${videoId}&key=${YOUTUBE_API_KEY}`, {
+      signal: AbortSignal.timeout(4000)
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.items && data.items.length > 0) {
+      const item = data.items[0];
+      return {
+        id: videoId,
+        title: item.snippet ? item.snippet.title : null,
+        channel: item.snippet ? item.snippet.channelTitle : null,
+        thumbnail: item.snippet && item.snippet.thumbnails ? (item.snippet.thumbnails.medium || item.snippet.thumbnails.default).url : null,
+        isLive: item.snippet ? item.snippet.liveBroadcastContent === 'live' : false
+      };
+    }
+  } catch (_) {}
+  return null;
+}
+
 function normalizeYouTubeUrl(rawUrl) {
   if (!rawUrl) return rawUrl;
   const match = rawUrl.match(/youtube\.com\/live\/([a-zA-Z0-9_-]+)/);
@@ -522,12 +552,15 @@ async function startPlayback(rawUrl) {
       };
     }).catch(e => ({ error: e.message }));
 
-    const title = evalResult.title || (await currentPage.title().catch(() => targetUrl));
+    const videoId = extractVideoId(targetUrl);
+    const videoMeta = await fetchVideoDetails(videoId);
+    const title = (videoMeta && videoMeta.title) || evalResult.title || (await currentPage.title().catch(() => targetUrl));
     activePlayingUrl = targetUrl;
     currentStatus = {
       state: 'playing',
       url: targetUrl,
       title: title,
+      videoDetails: videoMeta,
       phonesOnline: connectedPhones.size,
       activePhoneUsed: availablePhone.name,
       activeSessionPhoneId: availablePhone.id,

@@ -310,7 +310,12 @@
 
         const displayUrl = document.getElementById('displayUrlText');
         if (d.activePlayingUrl) {
-          displayUrl.innerHTML = '<a href="' + d.activePlayingUrl + '" target="_blank">' + d.activePlayingUrl + '</a>';
+          const vMeta = d.status && d.status.videoDetails;
+          let bannerHtml = '<a href="' + d.activePlayingUrl + '" target="_blank">' + d.activePlayingUrl + '</a>';
+          if (vMeta && vMeta.title) {
+            bannerHtml = '<div style="margin-bottom:4px; font-weight:700; color:#fff;">🎬 ' + vMeta.title + (vMeta.channel ? ' <span style="font-size:0.8rem; color:#8b9bb4; font-weight:400;">(' + vMeta.channel + ')</span>' : '') + (vMeta.isLive ? ' <span style="background:#ef4444; color:#fff; font-size:0.68rem; padding:1px 5px; border-radius:3px;">LIVE</span>' : '') + '</div>' + bannerHtml;
+          }
+          displayUrl.innerHTML = bannerHtml;
           if (!document.getElementById('streamUrlInput').value) {
             document.getElementById('streamUrlInput').value = d.activePlayingUrl;
           }
