@@ -298,11 +298,15 @@ function normalizeYouTubeUrl(rawUrl) {
 function sanitizeCookies(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map(c => {
+    let rawDomain = c.domain || '.youtube.com';
+    let cleanHost = rawDomain.replace(/^\./, '');
+    let cookieUrl = `https://${cleanHost}`;
+
     const item = {
       name: c.name,
       value: c.value,
-      url: 'https://www.youtube.com',
-      domain: c.domain || '.youtube.com',
+      url: cookieUrl,
+      domain: rawDomain.startsWith('.') ? rawDomain : ('.' + rawDomain),
       path: c.path || '/',
       httpOnly: Boolean(c.httpOnly),
       secure: Boolean(c.secure)
@@ -400,16 +404,19 @@ async function startPlayback(rawUrl) {
     for (const c of cookies) {
       try {
         await currentPage.setCookie(c);
-        if (c.domain === '.youtube.com') {
-          await currentPage.setCookie({ ...c, domain: '.google.com', url: 'https://www.google.com' }).catch(() => {});
-        }
-      } catch (err) {}
+      } catch (err) {
+        log(`[Cookie Error] Failed to set ${c.name} (${c.domain}): ${err.message}`);
+      }
     }
 
-    // Block heavy assets
+    // Block heavy assets (allow user profile avatar icons)
     await currentPage.setRequestInterception(true);
     currentPage.on('request', (req) => {
       const type = req.resourceType();
+      const reqUrl = req.url();
+      if (reqUrl.includes('yt3.ggpht.com') || reqUrl.includes('googleusercontent.com')) {
+        return req.continue();
+      }
       if (['image', 'font'].includes(type)) {
         req.abort();
       } else {
@@ -627,6 +634,29 @@ app.get('/phones', (req, res) => {
     return res.json({ count: phoneList.length, phones: phoneList });
   }
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.get('/api/auth-debug', async (req, res) => {
+  if (!currentPage || currentPage.isClosed()) {
+    return res.json({ error: 'No page active' });
+  }
+  try {
+    const info = await currentPage.evaluate(() => {
+      const signInBtn = document.querySelector('a[href*="accounts.google.com/ServiceLogin"], ytd-button-renderer a[href*="signin"]');
+      const avatarBtn = document.querySelector('button#avatar-btn, #avatar-btn, ytd-topbar-menu-button-renderer img');
+      const masthead = document.querySelector('ytd-masthead') ? document.querySelector('ytd-masthead').innerText : 'No masthead';
+      return {
+        hasSignInButton: !!signInBtn,
+        signInButtonText: signInBtn ? signInBtn.innerText : null,
+        hasAvatarButton: !!avatarBtn,
+        cookiesInDocument: document.cookie.split(';').map(s => s.trim().split('=')[0]),
+        mastheadSnippet: masthead.slice(0, 300)
+      };
+    });
+    res.json(info);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/health', (req, res) => {
