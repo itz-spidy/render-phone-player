@@ -280,6 +280,8 @@ async function keepVideoPlaying() {
   if (currentPage && !currentPage.isClosed()) {
     try {
       await currentPage.evaluate(() => {
+        const largeBtn = document.querySelector('.ytp-large-play-button');
+        if (largeBtn) largeBtn.click();
         const v = document.querySelector('video');
         if (v && v.paused) {
           v.muted = true;
@@ -291,6 +293,7 @@ async function keepVideoPlaying() {
           if (p.setPlaybackQualityRange) p.setPlaybackQualityRange('tiny', 'tiny');
         }
       });
+      await currentPage.keyboard.press('k').catch(() => {});
     } catch (e) {}
   }
 }
