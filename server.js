@@ -9,6 +9,8 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+const VERCEL_API_URL = process.env.VERCEL_API_URL || 'https://vercel-browser-controller.vercel.app/api/url';
+const SCAN_INTERVAL_MS = 60 * 1000; // Scan every 60 seconds
 
 const MINIMAL_ARGS = [
   '--no-sandbox',
@@ -62,83 +64,34 @@ function getCookies() {
 
 let currentBrowser = null;
 let currentPage = null;
-let playbackInterval = null;
+let activePlayingUrl = null;
 let currentStatus = {
-  playing: false,
+  state: 'idle',
   url: null,
   title: null,
   startedAt: null,
-  currentTime: 0,
-  duration: 0
+  lastScanAt: null
 };
 
-app.get('/', async (req, res) => {
-  let livePlayback = { ...currentStatus };
-
-  if (currentPage && !currentPage.isClosed()) {
-    try {
-      const realTime = await currentPage.evaluate(() => {
-        const v = document.querySelector('video');
-        return v ? { currentTime: Math.floor(v.currentTime), paused: v.paused, duration: Math.floor(v.duration || 0) } : null;
-      });
-      if (realTime) {
-        livePlayback.currentTime = realTime.currentTime;
-        livePlayback.playing = !realTime.paused;
-        livePlayback.duration = realTime.duration;
-      }
-    } catch (e) {}
+async function closeBrowserSession() {
+  if (currentBrowser) {
+    console.log('[Browser] Closing browser session to free resources...');
+    try { await currentBrowser.close(); } catch (e) {}
+    currentBrowser = null;
+    currentPage = null;
+    activePlayingUrl = null;
+    currentStatus.state = 'idle';
+    currentStatus.url = null;
+    currentStatus.title = null;
+    currentStatus.startedAt = null;
   }
+}
 
-  res.json({
-    status: 'online',
-    message: 'Render YouTube Player',
-    currentPlayback: livePlayback
-  });
-});
-
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
-});
-
-// Live visual proof screenshot endpoint
-app.get('/screenshot', async (req, res) => {
-  if (!currentPage || currentPage.isClosed()) {
-    return res.status(404).send('No active browser playback session.');
-  }
+async function startPlayback(targetUrl) {
+  console.log(`[Playback] Launching browser for: ${targetUrl}`);
+  await closeBrowserSession();
 
   try {
-    const screenshot = await currentPage.screenshot({ type: 'jpeg', quality: 60 });
-    res.set('Content-Type', 'image/jpeg');
-    res.send(screenshot);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to capture screenshot: ' + err.message });
-  }
-});
-
-// Playback Trigger
-app.all('/play', async (req, res) => {
-  let targetUrl = req.query.url;
-  if (!targetUrl && req.body) targetUrl = req.body.url;
-
-  if (!targetUrl) {
-    return res.status(400).json({ error: 'Missing "url" parameter.' });
-  }
-
-  console.log(`[API] Triggering playback for: ${targetUrl}`);
-
-  try {
-    if (playbackInterval) {
-      clearInterval(playbackInterval);
-      playbackInterval = null;
-    }
-
-    if (currentBrowser) {
-      console.log('Releasing previous browser instance...');
-      try { await currentBrowser.close(); } catch (e) {}
-      currentBrowser = null;
-      currentPage = null;
-    }
-
     currentBrowser = await puppeteer.launch({
       headless: 'new',
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -151,11 +104,13 @@ app.all('/play', async (req, res) => {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     );
 
+    // Set Cookies
     const cookies = sanitizeCookies(getCookies());
     if (cookies.length > 0) {
       await currentPage.setCookie(...cookies);
     }
 
+    // Block images & fonts
     await currentPage.setRequestInterception(true);
     currentPage.on('request', (req) => {
       const type = req.resourceType();
@@ -166,66 +121,146 @@ app.all('/play', async (req, res) => {
       }
     });
 
-    await currentPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await currentPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
+    // Dismiss popups
     await currentPage.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('button, ytd-button-renderer'));
       for (const btn of buttons) {
         const txt = (btn.innerText || '').toLowerCase();
-        if (txt.includes('accept') || txt.includes('agree') || txt.includes('reject') || txt.includes('dismiss')) {
+        if (txt.includes('accept') || txt.includes('agree') || txt.includes('dismiss')) {
           btn.click();
           break;
         }
       }
     }).catch(() => {});
 
-    await currentPage.waitForSelector('video', { timeout: 8000 }).catch(() => {});
+    await currentPage.waitForSelector('video', { timeout: 10000 }).catch(() => {});
 
-    const pageTitle = await currentPage.title();
-
-    currentStatus = {
-      playing: true,
-      url: targetUrl,
-      title: pageTitle,
-      startedAt: new Date().toISOString(),
-      currentTime: 0,
-      duration: 0
-    };
-
-    // Auto-keepalive loop: continuously checks every 3 seconds to unpause and enforce 144p
-    playbackInterval = setInterval(async () => {
-      if (currentPage && !currentPage.isClosed()) {
-        try {
-          await currentPage.evaluate(() => {
-            const v = document.querySelector('video');
-            if (v) {
-              v.muted = true;
-              if (v.paused) v.play().catch(() => {});
-            }
-            const p = document.getElementById('movie_player');
-            if (p && typeof p.setPlaybackQualityRange === 'function') {
-              p.setPlaybackQualityRange('tiny', 'tiny');
-            }
-          });
-        } catch (e) {}
+    // Force 144p & play
+    await currentPage.evaluate(() => {
+      const v = document.querySelector('video');
+      if (v) {
+        v.muted = true;
+        v.play().catch(() => {});
       }
-    }, 3000);
+      const p = document.getElementById('movie_player');
+      if (p && typeof p.setPlaybackQualityRange === 'function') {
+        p.setPlaybackQualityRange('tiny', 'tiny');
+      }
+    }).catch(() => {});
 
-    return res.json({
-      success: true,
+    const title = await currentPage.title();
+
+    activePlayingUrl = targetUrl;
+    currentStatus = {
+      state: 'playing',
       url: targetUrl,
-      title: pageTitle,
-      screenshotUrl: '/screenshot',
-      message: 'Video launched. Continuous 144p playback monitor active.'
-    });
+      title: title,
+      startedAt: new Date().toISOString(),
+      lastScanAt: new Date().toISOString()
+    };
+    console.log(`[Playback] Verified playing at 144p: "${title}"`);
 
   } catch (err) {
-    console.error('Play error:', err);
-    currentStatus.playing = false;
-    return res.status(500).json({ success: false, error: err.message });
+    console.error('[Playback] Error starting playback:', err.message);
+    await closeBrowserSession();
+  }
+}
+
+// Ensure running video stays unpaused
+async function keepVideoPlaying() {
+  if (currentPage && !currentPage.isClosed()) {
+    try {
+      await currentPage.evaluate(() => {
+        const v = document.querySelector('video');
+        if (v && v.paused) {
+          v.muted = true;
+          v.play().catch(() => {});
+        }
+        const p = document.getElementById('movie_player');
+        if (p && typeof p.setPlaybackQualityRange === 'function') {
+          p.setPlaybackQualityRange('tiny', 'tiny');
+        }
+      });
+    } catch (e) {}
+  }
+}
+
+// Core Automatic Scan: checks Vercel API every 60 seconds
+async function scanApiQueue() {
+  currentStatus.lastScanAt = new Date().toISOString();
+  console.log(`[Auto-Scan 60s] Checking API at: ${VERCEL_API_URL}`);
+
+  try {
+    const res = await fetch(VERCEL_API_URL, { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) {
+      console.warn(`[Auto-Scan 60s] API returned status ${res.status}`);
+      return;
+    }
+
+    const data = await res.json();
+    const targetUrl = data && data.url ? data.url.trim() : null;
+
+    if (!targetUrl) {
+      // No URL present in API -> stay completely idle
+      if (currentBrowser) {
+        console.log('[Auto-Scan 60s] URL was removed/empty. Closing browser and going idle.');
+        await closeBrowserSession();
+      } else {
+        console.log('[Auto-Scan 60s] No URL in API. Remaining IDLE.');
+      }
+      return;
+    }
+
+    // URL is present
+    if (activePlayingUrl === targetUrl && currentBrowser) {
+      console.log(`[Auto-Scan 60s] URL unchanged (${targetUrl}). Confirming playback is running...`);
+      await keepVideoPlaying();
+    } else {
+      console.log(`[Auto-Scan 60s] New URL detected: ${targetUrl}. Starting playback.`);
+      await startPlayback(targetUrl);
+    }
+
+  } catch (err) {
+    console.error('[Auto-Scan 60s] Scan error:', err.message);
+  }
+}
+
+// Start auto-scan loop
+setInterval(scanApiQueue, SCAN_INTERVAL_MS);
+// Initial scan on startup (after 5s delay)
+setTimeout(scanApiQueue, 5000);
+
+// Status API
+app.get('/', (req, res) => {
+  res.json({
+    service: 'Render Auto-Scanner & Player',
+    status: currentStatus,
+    apiQueueWatched: VERCEL_API_URL,
+    scanInterval: '60 seconds'
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
+// Live visual screenshot endpoint
+app.get('/screenshot', async (req, res) => {
+  if (!currentPage || currentPage.isClosed()) {
+    return res.status(404).send('No active playback. Render is currently idle.');
+  }
+
+  try {
+    const screenshot = await currentPage.screenshot({ type: 'jpeg', quality: 60 });
+    res.set('Content-Type', 'image/jpeg');
+    res.send(screenshot);
+  } catch (err) {
+    res.status(500).json({ error: 'Screenshot error: ' + err.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Render Browser Player listening on port ${PORT}`);
+  console.log(`Render Auto-Player service running on port ${PORT}`);
 });
