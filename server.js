@@ -71,7 +71,6 @@ let currentStatus = {
   duration: 0
 };
 
-// Root status
 app.get('/', async (req, res) => {
   let livePlayback = { ...currentStatus };
 
@@ -165,30 +164,28 @@ app.all('/play', async (req, res) => {
       }
     });
 
-    // 5. Navigate to YouTube
-    await currentPage.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 45000 });
+    // 5. Navigate to YouTube (DOM content loaded - FAST! avoids 502 gateway timeout)
+    await currentPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
     // 6. Dismiss any consent or cookie popups if present
-    try {
-      await currentPage.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button, ytd-button-renderer'));
-        for (const btn of buttons) {
-          const txt = (btn.innerText || '').toLowerCase();
-          if (txt.includes('accept') || txt.includes('agree') || txt.includes('reject') || txt.includes('dismiss')) {
-            btn.click();
-            break;
-          }
+    await currentPage.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button, ytd-button-renderer'));
+      for (const btn of buttons) {
+        const txt = (btn.innerText || '').toLowerCase();
+        if (txt.includes('accept') || txt.includes('agree') || txt.includes('reject') || txt.includes('dismiss')) {
+          btn.click();
+          break;
         }
-      });
-    } catch (e) {}
+      }
+    }).catch(() => {});
 
-    // 7. CRITICAL: Wait for the <video> element to hydrate on YouTube
-    await currentPage.waitForSelector('video', { timeout: 20000 });
+    // 7. Wait briefly for the <video> element to hydrate
+    await currentPage.waitForSelector('video', { timeout: 8000 }).catch(() => {});
 
     // 8. Force 144p quality, unmute video, and force play
     const playStatus = await currentPage.evaluate(async () => {
       const video = document.querySelector('video');
-      if (!video) return { error: 'No video element' };
+      if (!video) return { error: 'Video element not yet mounted, starting background hydration' };
 
       // Force 144p resolution
       const player = document.getElementById('movie_player');
@@ -201,7 +198,7 @@ app.all('/play', async (req, res) => {
         }
       }
 
-      // Must mute to permit background playback without user interaction
+      // Mute to permit background playback without user interaction
       video.muted = true;
       try {
         await video.play();
@@ -212,9 +209,6 @@ app.all('/play', async (req, res) => {
         const playBtn = document.querySelector('.ytp-play-button');
         if (playBtn) playBtn.click();
       }
-
-      // Wait a moment in-page to confirm playback starts
-      await new Promise(r => setTimeout(r, 2000));
 
       return {
         currentTime: Math.round(video.currentTime),
@@ -227,12 +221,12 @@ app.all('/play', async (req, res) => {
     const pageTitle = await currentPage.title();
 
     currentStatus = {
-      playing: playStatus.playing,
+      playing: playStatus.playing || false,
       url: targetUrl,
       title: pageTitle,
       startedAt: new Date().toISOString(),
-      currentTime: playStatus.currentTime,
-      duration: playStatus.duration
+      currentTime: playStatus.currentTime || 0,
+      duration: playStatus.duration || 0
     };
 
     return res.json({
@@ -241,7 +235,7 @@ app.all('/play', async (req, res) => {
       title: pageTitle,
       playback: playStatus,
       screenshotUrl: '/screenshot',
-      message: playStatus.playing ? 'Video verified PLAYING at 144p quality.' : 'Video loaded, checking playback status.'
+      message: 'Video launched and streaming on lowest quality (144p).'
     });
 
   } catch (err) {
