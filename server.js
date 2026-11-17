@@ -623,7 +623,7 @@ function renderDashboardHtml(phones, currentStatus, activePlayingUrl) {
       </div>
       <div class="stat-item">
         <div class="stat-label">Playback State</div>
-        <div class="stat-value" style="color: #58a6ff">${escapeHtml(currentStatus || 'idle')}</div>
+        <div class="stat-value" style="color: #58a6ff">${escapeHtml((currentStatus && currentStatus.state) ? currentStatus.state.toUpperCase() : 'IDLE')}</div>
       </div>
       <div class="stat-item" style="grid-column: span 2;">
         <div class="stat-label">Active Video URL</div>
