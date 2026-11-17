@@ -10,7 +10,6 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Render free tier ultra-low RAM Chromium flags
 const MINIMAL_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
@@ -20,12 +19,13 @@ const MINIMAL_ARGS = [
   '--single-process',
   '--disable-extensions',
   '--disable-software-rasterizer',
-  '--mute-audio',                     // Critical: Disables audio decoding to save CPU/RAM
+  '--mute-audio',
   '--disable-background-networking',
   '--disable-default-apps',
   '--disable-sync',
   '--metrics-recording-only',
   '--autoplay-policy=no-user-gesture-required',
+  '--window-size=1280,720',
   '--js-flags=--max-old-space-size=128'
 ];
 
@@ -66,14 +66,33 @@ let currentStatus = {
   playing: false,
   url: null,
   title: null,
-  startedAt: null
+  startedAt: null,
+  currentTime: 0,
+  duration: 0
 };
 
-app.get('/', (req, res) => {
+// Root status
+app.get('/', async (req, res) => {
+  let livePlayback = { ...currentStatus };
+
+  if (currentPage && !currentPage.isClosed()) {
+    try {
+      const realTime = await currentPage.evaluate(() => {
+        const v = document.querySelector('video');
+        return v ? { currentTime: Math.floor(v.currentTime), paused: v.paused, duration: Math.floor(v.duration || 0) } : null;
+      });
+      if (realTime) {
+        livePlayback.currentTime = realTime.currentTime;
+        livePlayback.playing = !realTime.paused;
+        livePlayback.duration = realTime.duration;
+      }
+    } catch (e) {}
+  }
+
   res.json({
     status: 'online',
-    message: 'Render Low-Resource YouTube Player is running',
-    currentPlayback: currentStatus
+    message: 'Render YouTube Player',
+    currentPlayback: livePlayback
   });
 });
 
@@ -81,35 +100,47 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
-// Main playback trigger: Accepts GET (/play?url=...) and POST ({ url: "..." })
-app.all('/play', async (req, res) => {
-  let targetUrl = req.query.url;
-  if (!targetUrl && req.body) {
-    targetUrl = req.body.url;
+// Live visual proof screenshot endpoint
+app.get('/screenshot', async (req, res) => {
+  if (!currentPage || currentPage.isClosed()) {
+    return res.status(404).send('No active browser playback session.');
   }
-
-  if (!targetUrl) {
-    return res.status(400).json({
-      error: 'Missing URL. Provide ?url=https://youtube.com/watch?... or JSON body { "url": "..." }'
-    });
-  }
-
-  console.log(`[API] Received request to play: ${targetUrl}`);
 
   try {
-    // 1. Close any running browser to prevent RAM accumulation
+    const screenshot = await currentPage.screenshot({ type: 'jpeg', quality: 60 });
+    res.set('Content-Type', 'image/jpeg');
+    res.send(screenshot);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to capture screenshot: ' + err.message });
+  }
+});
+
+// Playback Trigger
+app.all('/play', async (req, res) => {
+  let targetUrl = req.query.url;
+  if (!targetUrl && req.body) targetUrl = req.body.url;
+
+  if (!targetUrl) {
+    return res.status(400).json({ error: 'Missing "url" parameter.' });
+  }
+
+  console.log(`[API] Triggering playback for: ${targetUrl}`);
+
+  try {
+    // 1. Terminate previous browser instance
     if (currentBrowser) {
-      console.log('Closing previous browser instance...');
+      console.log('Releasing previous browser instance...');
       try { await currentBrowser.close(); } catch (e) {}
       currentBrowser = null;
       currentPage = null;
     }
 
-    // 2. Launch Chromium with lowest resource flags
+    // 2. Launch browser
     currentBrowser = await puppeteer.launch({
       headless: 'new',
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: MINIMAL_ARGS
+      args: MINIMAL_ARGS,
+      defaultViewport: { width: 1280, height: 720 }
     });
 
     currentPage = await currentBrowser.newPage();
@@ -117,102 +148,106 @@ app.all('/play', async (req, res) => {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     );
 
-    // 3. Inject provided cookies
+    // 3. Set cookies
     const cookies = sanitizeCookies(getCookies());
     if (cookies.length > 0) {
       await currentPage.setCookie(...cookies);
-      console.log(`Injected ${cookies.length} authentication cookies.`);
     }
 
-    // 4. Block heavy image and font assets to maintain ~70MB footprint
+    // 4. Intercept: block images and fonts to save memory, allow scripts and video
     await currentPage.setRequestInterception(true);
-    currentPage.on('request', (request) => {
-      const type = request.resourceType();
+    currentPage.on('request', (req) => {
+      const type = req.resourceType();
       if (['image', 'font'].includes(type)) {
-        request.abort();
+        req.abort();
       } else {
-        request.continue();
+        req.continue();
       }
     });
 
-    // 5. Navigate to YouTube video
-    await currentPage.goto(targetUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: 35000
-    });
+    // 5. Navigate to YouTube
+    await currentPage.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 45000 });
 
-    // 6. Force lowest quality (144p / tiny) and trigger playback
-    const playResult = await currentPage.evaluate(async () => {
-      let qualitySet = false;
-      let playTriggered = false;
+    // 6. Dismiss any consent or cookie popups if present
+    try {
+      await currentPage.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, ytd-button-renderer'));
+        for (const btn of buttons) {
+          const txt = (btn.innerText || '').toLowerCase();
+          if (txt.includes('accept') || txt.includes('agree') || txt.includes('reject') || txt.includes('dismiss')) {
+            btn.click();
+            break;
+          }
+        }
+      });
+    } catch (e) {}
 
-      // Lock YouTube player to 144p (tiny)
+    // 7. CRITICAL: Wait for the <video> element to hydrate on YouTube
+    await currentPage.waitForSelector('video', { timeout: 20000 });
+
+    // 8. Force 144p quality, unmute video, and force play
+    const playStatus = await currentPage.evaluate(async () => {
+      const video = document.querySelector('video');
+      if (!video) return { error: 'No video element' };
+
+      // Force 144p resolution
       const player = document.getElementById('movie_player');
-      if (player && typeof player.setPlaybackQualityRange === 'function') {
-        player.setPlaybackQualityRange('tiny', 'tiny');
+      if (player) {
+        if (typeof player.setPlaybackQualityRange === 'function') {
+          player.setPlaybackQualityRange('tiny', 'tiny');
+        }
         if (typeof player.setPlaybackQuality === 'function') {
           player.setPlaybackQuality('tiny');
         }
-        qualitySet = true;
       }
 
-      // Unmute and play HTML5 video element
-      const video = document.querySelector('video');
-      if (video) {
-        video.muted = true; // Must be muted for automatic background streaming
-        try {
-          await video.play();
-          playTriggered = true;
-        } catch (e) {}
+      // Must mute to permit background playback without user interaction
+      video.muted = true;
+      try {
+        await video.play();
+      } catch (err) {}
+
+      // Click YouTube play button if paused
+      if (video.paused) {
+        const playBtn = document.querySelector('.ytp-play-button');
+        if (playBtn) playBtn.click();
       }
 
-      // Also click the native play button if not playing
-      const playBtn = document.querySelector('.ytp-play-button');
-      if (playBtn && video && video.paused) {
-        playBtn.click();
-        playTriggered = true;
-      }
+      // Wait a moment in-page to confirm playback starts
+      await new Promise(r => setTimeout(r, 2000));
 
       return {
-        qualitySet,
-        playTriggered,
-        videoCurrentTime: video ? video.currentTime : 0,
-        videoPaused: video ? video.paused : true
+        currentTime: Math.round(video.currentTime),
+        duration: Math.round(video.duration || 0),
+        paused: video.paused,
+        playing: !video.paused
       };
     });
 
     const pageTitle = await currentPage.title();
 
     currentStatus = {
-      playing: true,
+      playing: playStatus.playing,
       url: targetUrl,
       title: pageTitle,
       startedAt: new Date().toISOString(),
-      lowestQualityForced: '144p (tiny)'
+      currentTime: playStatus.currentTime,
+      duration: playStatus.duration
     };
-
-    console.log(`[Success] Playing: ${pageTitle} at 144p`);
 
     return res.json({
       success: true,
       url: targetUrl,
       title: pageTitle,
-      message: 'Video is now playing on lowest quality (144p) with cookies loaded.',
-      playerDetails: playResult
+      playback: playStatus,
+      screenshotUrl: '/screenshot',
+      message: playStatus.playing ? 'Video verified PLAYING at 144p quality.' : 'Video loaded, checking playback status.'
     });
 
   } catch (err) {
-    console.error('[Error] Playback failed:', err);
-    if (currentBrowser) {
-      try { await currentBrowser.close(); } catch (e) {}
-      currentBrowser = null;
-      currentPage = null;
-    }
+    console.error('Play error:', err);
     currentStatus.playing = false;
-    return res.status(500).json({
-      success: false,
-      error: err.message
-    });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
