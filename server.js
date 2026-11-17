@@ -36,10 +36,18 @@ const MINIMAL_ARGS = [
   '--disable-sync',
   '--metrics-recording-only',
   '--autoplay-policy=no-user-gesture-required',
-  '--disable-blink-features=AutomationControlled', // Critical: Bypasses Google bot detection
-  '--window-size=1280,720',
-  '--js-flags=--max-old-space-size=128'
+  '--disable-blink-features=AutomationControlled',
+  '--window-size=1280,720'
 ];
+
+function normalizeYouTubeUrl(rawUrl) {
+  if (!rawUrl) return rawUrl;
+  const match = rawUrl.match(/youtube\.com\/live\/([a-zA-Z0-9_-]+)/);
+  if (match) {
+    return `https://www.youtube.com/watch?v=${match[1]}`;
+  }
+  return rawUrl;
+}
 
 function sanitizeCookies(raw) {
   if (!Array.isArray(raw)) return [];
@@ -99,7 +107,8 @@ async function closeBrowserSession() {
   }
 }
 
-async function startPlayback(targetUrl) {
+async function startPlayback(rawUrl) {
+  const targetUrl = normalizeYouTubeUrl(rawUrl);
   log(`Starting playback session for: ${targetUrl}`);
   await closeBrowserSession();
 
@@ -113,7 +122,6 @@ async function startPlayback(targetUrl) {
 
     currentPage = await currentBrowser.newPage();
     
-    // Mask Puppeteer fingerprint so YouTube doesn't block cookies or treat as bot
     await currentPage.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
@@ -124,24 +132,21 @@ async function startPlayback(targetUrl) {
       Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
     });
 
-    // Set Cookies individually with domain fallback for YouTube + Google
+    // Set Cookies for both .youtube.com and .google.com
     const cookies = sanitizeCookies(getCookies());
     let cookiesSet = 0;
     for (const c of cookies) {
       try {
         await currentPage.setCookie(c);
         cookiesSet++;
-        // Also inject for .google.com so Google Auth services validate
         if (c.domain === '.youtube.com') {
           await currentPage.setCookie({ ...c, domain: '.google.com' }).catch(() => {});
         }
-      } catch (err) {
-        log(`Warning: Failed to set cookie ${c.name}: ${err.message}`);
-      }
+      } catch (err) {}
     }
     log(`Injected ${cookiesSet}/${cookies.length} authentication cookies.`);
 
-    // Block images & fonts to maintain ~80MB footprint
+    // Block heavy assets
     await currentPage.setRequestInterception(true);
     currentPage.on('request', (req) => {
       const type = req.resourceType();
@@ -152,8 +157,13 @@ async function startPlayback(targetUrl) {
       }
     });
 
+    // Navigate with generous timeout; do not terminate on timeout, allow page to continue hydrating
     log(`Navigating to ${targetUrl}...`);
-    await currentPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+    try {
+      await currentPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    } catch (navErr) {
+      log(`Navigation note (${navErr.message}) - continuing with page hydration...`);
+    }
 
     // Dismiss any popups or dialogs
     await currentPage.evaluate(() => {
@@ -168,7 +178,7 @@ async function startPlayback(targetUrl) {
     }).catch(() => {});
 
     // Wait for video element
-    await currentPage.waitForSelector('video', { timeout: 15000 }).catch(() => {});
+    await currentPage.waitForSelector('video', { timeout: 30000 }).catch(() => {});
 
     // Force 144p resolution, unmute and play
     const evalResult = await currentPage.evaluate(() => {
@@ -185,7 +195,6 @@ async function startPlayback(targetUrl) {
         if (p.setPlaybackQualityRange) p.setPlaybackQualityRange('tiny', 'tiny');
       }
 
-      // Check if logged in (avatar or profile button present)
       const avatar = document.querySelector('button#avatar-btn, #avatar-btn, ytd-topbar-menu-button-renderer img, button[aria-label*="Account"]');
       const signInBtn = document.querySelector('a[href*="signin"], ytd-button-renderer a[href*="accounts.google.com"]');
 
@@ -198,7 +207,7 @@ async function startPlayback(targetUrl) {
     }).catch(e => ({ error: e.message }));
 
     const title = evalResult.title || (await currentPage.title().catch(() => targetUrl));
-    activePlayingUrl = targetUrl;
+    activePlayingUrl = rawUrl;
     currentStatus = {
       state: 'playing',
       url: targetUrl,
@@ -279,11 +288,9 @@ async function scanApiQueue() {
   }
 }
 
-// Start auto-scan loop
 setInterval(scanApiQueue, SCAN_INTERVAL_MS);
 setTimeout(scanApiQueue, 4000);
 
-// Status API
 app.get('/', (req, res) => {
   res.json({
     service: 'Render Auto-Scanner & Player',
@@ -297,12 +304,10 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
-// View internal server logs
 app.get('/logs', (req, res) => {
   res.type('text/plain').send(logBuffer.join('\n'));
 });
 
-// Live visual screenshot
 app.get('/screenshot', async (req, res) => {
   if (!currentPage || currentPage.isClosed()) {
     return res.status(404).send('No active playback. Render is currently idle.');
