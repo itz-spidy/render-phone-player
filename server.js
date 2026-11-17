@@ -541,118 +541,42 @@ async function scanApiQueue() {
 setInterval(scanApiQueue, SCAN_INTERVAL_MS);
 setTimeout(scanApiQueue, 4000);
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
-}
+app.use(express.static(path.join(__dirname, 'public')));
 
-function renderDashboardHtml(phones, currentStatus, activePlayingUrl) {
-  const phoneCards = phones.length === 0
-    ? `<div class="empty-state">
-         <div class="empty-icon">📱</div>
-         <h3>No Phones Connected Yet</h3>
-         <p>Run the 1-click Termux command on your phone to connect it to this pool.</p>
-         <code>termux-wake-lock &amp;&amp; mkdir -p ~/phone-bridge &amp;&amp; cd ~/phone-bridge &amp;&amp; npm init -y &gt; /dev/null 2&gt;&amp;1 &amp;&amp; npm install --silent ws &amp;&amp; curl -s -O https://raw.githubusercontent.com/itz-spidy/render-phone-player/main/phone_bridge.js &amp;&amp; tmux kill-session -t proxy 2&gt;/dev/null; tmux new-session -d -s proxy 'node phone_bridge.js wss://phone-hub-player.onrender.com/phone-tunnel "Phone 1"'</code>
-       </div>`
-    : phones.map((p) => `
-        <div class="card phone-card">
-          <div class="card-header">
-            <span class="phone-name">📱 ${escapeHtml(p.name)}</span>
-            <span class="badge badge-online">● Online</span>
-          </div>
-          <div class="card-body">
-            <div class="info-row"><span class="label">🌐 Public IP:</span> <span class="val font-mono">${escapeHtml(p.ip)}</span></div>
-            <div class="info-row"><span class="label">📍 Location:</span> <span class="val">${escapeHtml(p.location || 'Detecting...')}</span></div>
-            <div class="info-row"><span class="label">📶 Network/ISP:</span> <span class="val">${escapeHtml(p.isp || 'Mobile/Broadband')}</span></div>
-            <div class="info-row"><span class="label">⏱️ Connected:</span> <span class="val">${new Date(p.connectedAt).toLocaleTimeString()}</span></div>
-          </div>
-        </div>
-      `).join('');
+// Stream control endpoints
+app.post('/api/stream', async (req, res) => {
+  try {
+    const rawUrl = req.body && req.body.url ? req.body.url.trim() : '';
+    if (rawUrl) {
+      await fetch(VERCEL_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: rawUrl })
+      });
+      setTimeout(scanApiQueue, 300);
+      return res.json({ success: true, url: rawUrl });
+    } else {
+      await fetch(VERCEL_API_URL, { method: 'DELETE' });
+      setTimeout(scanApiQueue, 300);
+      return res.json({ success: true, url: null });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Render Phone Hub & Player Status</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-    body { background: #0a0c10; color: #e1e4e8; padding: 20px; line-height: 1.5; }
-    .container { max-width: 900px; margin: 0 auto; }
-    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #21262d; padding-bottom: 16px; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
-    h1 { font-size: 1.4rem; font-weight: 600; color: #58a6ff; display: flex; align-items: center; gap: 8px; }
-    .badge { font-size: 0.75rem; padding: 4px 8px; border-radius: 12px; font-weight: 600; }
-    .badge-online { background: #13231b; color: #3fb950; border: 1px solid #238636; }
-    .status-banner { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
-    .stat-item .stat-label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
-    .stat-item .stat-value { font-size: 1.2rem; font-weight: 700; margin-top: 4px; }
-    .phones-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
-    .card-header { padding: 12px 16px; background: #21262d; display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
-    .card-body { padding: 16px; display: flex; flex-direction: column; gap: 8px; }
-    .info-row { display: flex; justify-content: space-between; font-size: 0.85rem; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
-    .label { color: #8b949e; }
-    .val { font-weight: 500; color: #f0f6fc; text-align: right; }
-    .font-mono { font-family: monospace; color: #79c0ff; }
-    .empty-state { grid-column: 1 / -1; background: #161b22; border: 1px dashed #30363d; border-radius: 8px; padding: 32px 16px; text-align: center; }
-    .empty-icon { font-size: 2.5rem; margin-bottom: 12px; }
-    .empty-state h3 { font-size: 1.1rem; margin-bottom: 8px; color: #f0f6fc; }
-    .empty-state p { font-size: 0.85rem; color: #8b949e; margin-bottom: 16px; }
-    code { display: block; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 0.75rem; color: #7ee787; text-align: left; overflow-x: auto; }
-    .actions { display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
-    .btn { background: #238636; color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-size: 0.85rem; font-weight: 500; }
-    .btn:hover { background: #2ea043; }
-    .btn-secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
-    .btn-secondary:hover { background: #30363d; }
-    .auto-refresh-tag { font-size: 0.75rem; color: #8b949e; display: flex; align-items: center; gap: 6px; }
-    .pulse-dot { width: 8px; height: 8px; background: #3fb950; border-radius: 50%; animation: pulse 2s infinite; }
-    @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } 100% { opacity: 1; transform: scale(1); } }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <header>
-      <h1>📱 Render Phone Hub & Player</h1>
-      <div class="auto-refresh-tag"><span class="pulse-dot"></span> Live auto-refreshing</div>
-    </header>
+app.delete('/api/stream', async (req, res) => {
+  try {
+    await fetch(VERCEL_API_URL, { method: 'DELETE' });
+    setTimeout(scanApiQueue, 300);
+    res.json({ success: true, url: null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    <div class="status-banner">
-      <div class="stat-item">
-        <div class="stat-label">Phone Pool Count</div>
-        <div class="stat-value" style="color: ${phones.length > 0 ? '#3fb950' : '#d29922'}">${phones.length} Online</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Playback State</div>
-        <div class="stat-value" style="color: #58a6ff">${escapeHtml((currentStatus && currentStatus.state) ? currentStatus.state.toUpperCase() : 'IDLE')}</div>
-      </div>
-      <div class="stat-item" style="grid-column: span 2;">
-        <div class="stat-label">Active Video URL</div>
-        <div class="stat-value" style="font-size: 0.85rem; word-break: break-all; color: #79c0ff">${escapeHtml(activePlayingUrl || 'None (Idle)')}</div>
-      </div>
-    </div>
-
-    <h2 style="font-size: 1.1rem; margin-bottom: 12px; font-weight: 600;">Connected Residential Devices:</h2>
-    <div class="phones-grid">
-      ${phoneCards}
-    </div>
-
-    <div class="actions">
-      <a href="/screenshot" target="_blank" class="btn">📸 View Live Video Screenshot</a>
-      <a href="/logs" target="_blank" class="btn btn-secondary">📜 View System Logs</a>
-      <a href="/phones?json=1" target="_blank" class="btn btn-secondary">{ } Raw JSON Data</a>
-      <a href="https://vercel-browser-controller.vercel.app" target="_blank" class="btn btn-secondary">🎛️ Vercel Controller</a>
-    </div>
-  </div>
-
-  <script>
-    setTimeout(() => location.reload(), 5000);
-  </script>
-</body>
-</html>`;
-}
-
-// Status API & Web UI
-app.get('/', (req, res) => {
+// JSON Status endpoint
+app.get('/api/status', (req, res) => {
   const phoneList = Array.from(connectedPhones.values()).map(p => ({
     name: p.name,
     ip: p.ip,
@@ -663,10 +587,6 @@ app.get('/', (req, res) => {
     isp: p.isp,
     connectedAt: p.connectedAt
   }));
-
-  if (req.headers.accept && req.headers.accept.includes('text/html') && !req.query.json) {
-    return res.type('text/html').send(renderDashboardHtml(phoneList, currentStatus, activePlayingUrl));
-  }
 
   res.json({
     service: 'Render Multi-Phone YouTube Player Hub',
@@ -678,23 +598,29 @@ app.get('/', (req, res) => {
   });
 });
 
-app.get('/phones', (req, res) => {
-  const phoneList = Array.from(connectedPhones.values()).map(p => ({
-    name: p.name,
-    ip: p.ip,
-    location: p.location,
-    city: p.city,
-    region: p.region,
-    country: p.country,
-    isp: p.isp,
-    connectedAt: p.connectedAt
-  }));
-
-  if (req.headers.accept && req.headers.accept.includes('text/html') && !req.query.json) {
-    return res.type('text/html').send(renderDashboardHtml(phoneList, currentStatus, activePlayingUrl));
+// GUI and phone endpoints
+app.get('/', (req, res) => {
+  if (req.query.json === '1' || req.headers.accept === 'application/json') {
+    return res.redirect('/api/status');
   }
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
-  res.json({ count: phoneList.length, phones: phoneList });
+app.get('/phones', (req, res) => {
+  if (req.query.json === '1' || req.headers.accept === 'application/json') {
+    const phoneList = Array.from(connectedPhones.values()).map(p => ({
+      name: p.name,
+      ip: p.ip,
+      location: p.location,
+      city: p.city,
+      region: p.region,
+      country: p.country,
+      isp: p.isp,
+      connectedAt: p.connectedAt
+    }));
+    return res.json({ count: phoneList.length, phones: phoneList });
+  }
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.get('/health', (req, res) => {
