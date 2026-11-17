@@ -301,6 +301,7 @@ function sanitizeCookies(raw) {
     const item = {
       name: c.name,
       value: c.value,
+      url: 'https://www.youtube.com',
       domain: c.domain || '.youtube.com',
       path: c.path || '/',
       httpOnly: Boolean(c.httpOnly),
@@ -391,11 +392,16 @@ async function startPlayback(rawUrl) {
 
     // Inject Cookies
     const cookies = sanitizeCookies(getCookies());
+    const hasSid = cookies.some(c => c.name === 'SID');
+    const hasHsid = cookies.some(c => c.name === 'HSID');
+    const hasLoginInfo = cookies.some(c => c.name === 'LOGIN_INFO');
+    log(`[Auth] Injecting ${cookies.length} cookies. (SID: ${hasSid}, HSID: ${hasHsid}, LOGIN_INFO: ${hasLoginInfo})`);
+
     for (const c of cookies) {
       try {
         await currentPage.setCookie(c);
         if (c.domain === '.youtube.com') {
-          await currentPage.setCookie({ ...c, domain: '.google.com' }).catch(() => {});
+          await currentPage.setCookie({ ...c, domain: '.google.com', url: 'https://www.google.com' }).catch(() => {});
         }
       } catch (err) {}
     }
@@ -631,17 +637,41 @@ app.get('/logs', (req, res) => {
   res.type('text/plain').send(logBuffer.join('\n'));
 });
 
+let isTakingScreenshot = false;
+let lastScreenshotBuffer = null;
+let lastScreenshotTime = 0;
+
 app.get('/screenshot', async (req, res) => {
   if (!currentPage || currentPage.isClosed()) {
     return res.status(404).send('No active playback. Render is currently idle.');
   }
 
+  const now = Date.now();
+  if (lastScreenshotBuffer && (now - lastScreenshotTime < 2500)) {
+    res.set('Content-Type', 'image/jpeg');
+    return res.send(lastScreenshotBuffer);
+  }
+
+  if (isTakingScreenshot && lastScreenshotBuffer) {
+    res.set('Content-Type', 'image/jpeg');
+    return res.send(lastScreenshotBuffer);
+  }
+
   try {
-    const screenshot = await currentPage.screenshot({ type: 'jpeg', quality: 60 });
+    isTakingScreenshot = true;
+    const screenshot = await currentPage.screenshot({ type: 'jpeg', quality: 50 });
+    lastScreenshotBuffer = screenshot;
+    lastScreenshotTime = Date.now();
     res.set('Content-Type', 'image/jpeg');
     res.send(screenshot);
   } catch (err) {
+    if (lastScreenshotBuffer) {
+      res.set('Content-Type', 'image/jpeg');
+      return res.send(lastScreenshotBuffer);
+    }
     res.status(500).json({ error: 'Screenshot error: ' + err.message });
+  } finally {
+    isTakingScreenshot = false;
   }
 });
 
