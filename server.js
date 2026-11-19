@@ -376,25 +376,28 @@ async function fetchVideoDetails(videoId) {
 
 function normalizeYouTubeUrl(rawUrl) {
   if (!rawUrl) return rawUrl;
-  const match = rawUrl.match(/youtube\.com\/live\/([a-zA-Z0-9_-]+)/);
+  let url = rawUrl.trim();
+  url = url.replace('https://m.youtube.com/', 'https://www.youtube.com/');
+  url = url.replace('http://m.youtube.com/', 'https://www.youtube.com/');
+  const match = url.match(/youtube\.com\/live\/([a-zA-Z0-9_-]+)/);
   if (match) {
     return `https://www.youtube.com/watch?v=${match[1]}`;
   }
-  return rawUrl;
+  return url;
 }
 
 function sanitizeCookies(raw) {
   if (!Array.isArray(raw)) return [];
-  return raw.map(c => {
+  const list = [];
+  for (const c of raw) {
+    if (!c.name || !c.value) continue;
     let rawDomain = c.domain || '.youtube.com';
-    let cleanHost = rawDomain.replace(/^\./, '');
-    let cookieUrl = `https://${cleanHost}`;
+    let cleanDomain = rawDomain.startsWith('.') ? rawDomain : ('.' + rawDomain);
 
     const item = {
       name: c.name,
       value: c.value,
-      url: cookieUrl,
-      domain: rawDomain.startsWith('.') ? rawDomain : ('.' + rawDomain),
+      domain: cleanDomain,
       path: c.path || '/',
       httpOnly: Boolean(c.httpOnly),
       secure: Boolean(c.secure)
@@ -402,10 +405,23 @@ function sanitizeCookies(raw) {
     if (c.expirationDate) item.expires = Math.floor(c.expirationDate);
     if (c.sameSite) {
       const s = String(c.sameSite).toLowerCase();
-      item.sameSite = (s === 'no_restriction' || s === 'none') ? 'None' : (s === 'strict' ? 'Strict' : 'Lax');
+      if (s === 'no_restriction' || s === 'none') {
+        item.sameSite = 'None';
+        item.secure = true;
+      } else if (s === 'strict') {
+        item.sameSite = 'Strict';
+      } else if (s === 'lax') {
+        item.sameSite = 'Lax';
+      }
     }
-    return item;
-  });
+    list.push(item);
+
+    // Also duplicate to .google.com so Google SSO recognizes the session
+    if (cleanDomain.includes('youtube.com')) {
+      list.push({ ...item, domain: '.google.com' });
+    }
+  }
+  return list;
 }
 
 function getCookies() {
@@ -485,18 +501,25 @@ async function startPlayback(rawUrl) {
       window.chrome = { runtime: {} };
     });
 
-    // Inject Cookies
+    // Inject Cookies via CDP Network.setCookies and page.setCookie
     const cookies = sanitizeCookies(getCookies());
     const hasSid = cookies.some(c => c.name === 'SID');
     const hasHsid = cookies.some(c => c.name === 'HSID');
     const hasLoginInfo = cookies.some(c => c.name === 'LOGIN_INFO');
     log(`[Auth] Injecting ${cookies.length} cookies. (SID: ${hasSid}, HSID: ${hasHsid}, LOGIN_INFO: ${hasLoginInfo})`);
 
-    for (const c of cookies) {
-      try {
-        await currentPage.setCookie(c);
-      } catch (err) {
-        log(`[Cookie Error] Failed to set ${c.name} (${c.domain}): ${err.message}`);
+    try {
+      const cdpClient = await currentPage.target().createCDPSession();
+      await cdpClient.send('Network.setCookies', { cookies });
+      log(`[Auth] Injected ${cookies.length} cookies directly via CDP Network.setCookies.`);
+    } catch (cdpErr) {
+      log(`[Auth Warning] CDP failed: ${cdpErr.message}, falling back to page.setCookie...`);
+      for (const c of cookies) {
+        try {
+          await currentPage.setCookie(c);
+        } catch (err) {
+          log(`[Cookie Error] Failed to set ${c.name} (${c.domain}): ${err.message}`);
+        }
       }
     }
 
@@ -553,13 +576,15 @@ async function startPlayback(rawUrl) {
         if (p.setPlaybackQualityRange) p.setPlaybackQualityRange('tiny', 'tiny');
       }
 
-      const avatar = document.querySelector('button#avatar-btn, #avatar-btn, ytd-masthead #avatar-btn, yt-img-shadow#avatar, ytd-topbar-menu-button-renderer img');
+      const ytcfgLoggedIn = (typeof window.ytcfg !== 'undefined' && window.ytcfg.get) ? Boolean(window.ytcfg.get('LOGGED_IN')) : false;
+      const avatar = document.querySelector('button#avatar-btn, #avatar-btn, ytd-masthead #avatar-btn, yt-img-shadow#avatar, ytd-topbar-menu-button-renderer img, img.yt-spec-avatar-shape__image, .yt-spec-avatar-shape');
       const signInBtn = document.querySelector('a[href*="accounts.google.com/ServiceLogin"], ytd-button-renderer a[href*="signin"], #buttons ytd-button-renderer a');
-      const isLoggedIn = !!avatar && !signInBtn;
+      const isLoggedIn = ytcfgLoggedIn || (!!avatar && !signInBtn);
 
       return {
         playStarted,
         isLoggedIn,
+        ytcfgLoggedIn,
         hasAvatar: !!avatar,
         hasSignIn: !!signInBtn,
         title: document.title
