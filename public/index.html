@@ -107,6 +107,14 @@
       </div>
     </header>
 
+    <!-- Merged Cluster Navigation -->
+    <div style="display:flex;gap:10px;align-items:center;background:#0c101b;padding:10px 14px;border-radius:8px;border:1px solid var(--border);font-size:0.82rem;flex-wrap:wrap;">
+      <span style="color:var(--text-muted);font-weight:600;">Merged Cluster:</span>
+      <a href="https://phone-hub-player.onrender.com" id="node1Badge" style="padding:4px 12px;border-radius:6px;text-decoration:none;font-weight:600;border:1px solid #334155;color:#94a3b8;background:#1e293b;">🌐 Node 1 (Account 1)</a>
+      <a href="https://phone-hub-player-2.onrender.com" id="node2Badge" style="padding:4px 12px;border-radius:6px;text-decoration:none;font-weight:600;border:1px solid #334155;color:#94a3b8;background:#1e293b;">🌐 Node 2 (Account 2)</a>
+      <span style="color:#38bdf8;margin-left:auto;font-size:0.75rem;">⚡ 1 Phone Bridges to BOTH Nodes Simultaneously</span>
+    </div>
+
     <!-- Stat Badges -->
     <div class="stats-row">
       <div class="stat-card">
@@ -173,7 +181,7 @@
             <p>Paste this 1-click command in Termux to connect Phone 1:</p>
             <div class="cmd-box">
               <button class="copy-btn" onclick="copyTermuxCmd()">📋 Copy</button>
-              <code id="termuxCmdText">termux-wake-lock &amp;&amp; mkdir -p ~/phone-bridge &amp;&amp; cd ~/phone-bridge &amp;&amp; npm init -y &gt; /dev/null 2&gt;&amp;1 &amp;&amp; npm install --silent ws &amp;&amp; curl -s -O https://raw.githubusercontent.com/itz-spidy/render-phone-player/main/phone_bridge.js &amp;&amp; tmux kill-session -t proxy 2&gt;/dev/null; tmux new-session -d -s proxy 'node phone_bridge.js wss://phone-hub-player.onrender.com/phone-tunnel "Phone 1"'</code>
+              <code id="termuxCmdText">termux-wake-lock &amp;&amp; mkdir -p ~/phone-bridge &amp;&amp; cd ~/phone-bridge &amp;&amp; npm init -y &gt; /dev/null 2&gt;&amp;1 &amp;&amp; npm install --silent ws &amp;&amp; curl -s -O https://raw.githubusercontent.com/itz-spidy/render-phone-player/main/phone_bridge.js &amp;&amp; tmux kill-session -t proxy 2&gt;/dev/null; tmux new-session -d -s proxy 'node phone_bridge.js "Phone 1"'</code>
             </div>
           </div>
         </div>
@@ -194,7 +202,16 @@
   </div>
 
   <script>
-    const termuxCommand = 'termux-wake-lock && mkdir -p ~/phone-bridge && cd ~/phone-bridge && npm init -y > /dev/null 2>&1 && npm install --silent ws && curl -s -O https://raw.githubusercontent.com/itz-spidy/render-phone-player/main/phone_bridge.js && tmux kill-session -t proxy 2>/dev/null; tmux new-session -d -s proxy \'node phone_bridge.js wss://phone-hub-player.onrender.com/phone-tunnel "Phone 1"\'';
+    const termuxCommand = 'termux-wake-lock && mkdir -p ~/phone-bridge && cd ~/phone-bridge && npm init -y > /dev/null 2>&1 && npm install --silent ws && curl -s -O https://raw.githubusercontent.com/itz-spidy/render-phone-player/main/phone_bridge.js && tmux kill-session -t proxy 2>/dev/null; tmux new-session -d -s proxy \'node phone_bridge.js "Phone 1"\'';
+
+    // Highlight current node in cluster bar
+    if (window.location.hostname.includes('phone-hub-player-2')) {
+      const b2 = document.getElementById('node2Badge');
+      if (b2) { b2.style.background = '#10b981'; b2.style.color = '#fff'; b2.style.borderColor = '#10b981'; b2.textContent = '● Node 2 (Account 2 - Active)'; }
+    } else {
+      const b1 = document.getElementById('node1Badge');
+      if (b1) { b1.style.background = '#10b981'; b1.style.color = '#fff'; b1.style.borderColor = '#10b981'; b1.textContent = '● Node 1 (Account 1 - Active)'; }
+    }
 
     function copyTermuxCmd() {
       navigator.clipboard.writeText(termuxCommand).then(() => {
