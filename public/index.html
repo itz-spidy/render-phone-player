@@ -146,14 +146,17 @@
       <!-- Live Screen -->
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">📸 Live Video Preview</div>
-          <span style="font-size: 0.75rem; color: var(--text-muted);" id="snapTime">Auto-refresh: 3s</span>
+          <div class="panel-title">📸 Video Preview</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size: 0.75rem; color: var(--text-muted);" id="snapTime">On-Demand Only</span>
+            <button id="snapBtn" onclick="updateSnapshot()" style="background:#1e293b;color:#38bdf8;border:1px solid #38bdf8;padding:4px 10px;border-radius:6px;font-size:0.75rem;cursor:pointer;font-weight:600;">📸 Capture Frame</button>
+          </div>
         </div>
         <div class="video-frame-box" id="frameBox">
-          <img id="liveSnapshot" src="/screenshot" alt="Live Stream Frame" onerror="handleSnapError()">
-          <div class="preview-badge">
-            <span class="pulse-dot" style="background:#ef4444;"></span>
-            <span id="badgeStreamText">Chromium Frame</span>
+          <img id="liveSnapshot" src="" alt="Live Stream Frame" style="display:none;" onerror="handleSnapError()">
+          <div id="snapPlaceholder" style="color:#8b9bb4;font-size:0.85rem;text-align:center;padding:25px;">
+            💤 Auto-capture disabled to eliminate CPU load.<br>
+            Click <strong style="color:#38bdf8;">"📸 Capture Frame"</strong> above to view a frame on-demand.
           </div>
         </div>
       </div>
@@ -181,7 +184,10 @@
     <div class="terminal-box">
       <div class="terminal-header">
         <span>📜 System Activity Logs</span>
-        <a href="/logs" target="_blank" style="color: var(--primary); text-decoration: none;">Full Logs</a>
+        <div style="display:flex;gap:12px;">
+          <a href="javascript:void(0)" onclick="refreshLogs()" style="color: var(--primary); font-size:0.8rem; text-decoration: none;">🔄 Refresh Logs</a>
+          <a href="/logs" target="_blank" style="color: var(--text-muted); font-size:0.8rem; text-decoration: none;">Full Logs &rarr;</a>
+        </div>
       </div>
       <div class="terminal-content" id="terminalLogs">Loading logs...</div>
     </div>
@@ -292,8 +298,10 @@
       }
     }
 
-    // Refresh Preview Image
+    // Refresh Preview Image (On-Demand only)
     function updateSnapshot() {
+      const snapBtn = document.getElementById('snapBtn');
+      if (snapBtn) snapBtn.textContent = 'Capturing...';
       const img = document.getElementById('liveSnapshot');
       const testImg = new Image();
       testImg.src = '/screenshot?t=' + Date.now();
@@ -302,9 +310,13 @@
         img.style.display = 'block';
         const ph = document.getElementById('snapPlaceholder');
         if (ph) ph.remove();
-        document.getElementById('snapTime').textContent = 'Live: ' + new Date().toLocaleTimeString();
+        document.getElementById('snapTime').textContent = 'Captured at ' + new Date().toLocaleTimeString();
+        if (snapBtn) snapBtn.textContent = '📸 Refresh Frame';
       };
-      testImg.onerror = handleSnapError;
+      testImg.onerror = () => {
+        handleSnapError();
+        if (snapBtn) snapBtn.textContent = '📸 Refresh Frame';
+      };
     }
 
     // Refresh Data & Phones
@@ -414,9 +426,9 @@
       } catch (_) {}
     }
 
-    setInterval(updateSnapshot, 3000);
-    setInterval(refreshData, 3000);
-    setInterval(refreshLogs, 4000);
+    // Zero aggressive polling: Screenshot auto-capture removed to eliminate CPU load!
+    // Lightweight data refresh every 30 seconds
+    setInterval(refreshData, 30000);
     refreshData();
     refreshLogs();
   </script>
