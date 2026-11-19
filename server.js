@@ -6,7 +6,7 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
-const { WebSocketServer } = require('ws');
+const { WebSocketServer, WebSocket } = require('ws');
 
 const app = express();
 app.use(cors());
@@ -26,11 +26,20 @@ function log(...args) {
   if (logBuffer.length > 250) logBuffer.shift();
 }
 
-// Phone Tunnel Management
-const connectedPhones = new Map(); // phoneId -> { id, ws, name, ip, city, region, country, isp, location, connectedAt }
+// Phone Tunnel Management & Shared Cluster Pool Mesh
+const connectedPhones = new Map(); // phoneId -> { id, ws, name, ip, city, region, country, isp, location, connectedAt, isPeer }
 const activeTunnels = new Map();   // tunnelId -> net.Socket
+const peerTunnels = new Map();     // tunnelId -> WebSocket (peer node ws)
+const clusterPeers = new Set();    // Set of WebSocket peers connected to our /cluster-tunnel
+let peerClientWs = null;          // WebSocket client connection to peer node
 let tunnelCounter = 0;
 let activeSessionPhoneId = null;
+
+const IS_NODE_2 = Boolean(
+  process.env.RENDER_SERVICE_NAME === 'phone-hub-player-2' ||
+  (process.env.RENDER_EXTERNAL_URL && process.env.RENDER_EXTERNAL_URL.includes('phone-hub-player-2')) ||
+  (process.env.COOKIES_JSON && process.env.COOKIES_JSON.includes('A4G5gYteBpcylWPAO'))
+);
 
 function isDatacenter(p) {
   if (!p) return false;
@@ -42,8 +51,15 @@ function isDatacenter(p) {
          s.includes('datacenter') || s.includes('hosting') || s.includes('server');
 }
 
+function getRealSessionPhone() {
+  const onlinePhones = Array.from(connectedPhones.values()).filter(p => !p.isPeer && p.ws && p.ws.readyState === 1);
+  if (onlinePhones.length === 0) return null;
+  const residential = onlinePhones.filter(p => !isDatacenter(p));
+  return residential.length > 0 ? residential[0] : onlinePhones[0];
+}
+
 function getSessionPhone() {
-  const onlinePhones = Array.from(connectedPhones.values()).filter(p => p.ws && p.ws.readyState === 1);
+  const onlinePhones = Array.from(connectedPhones.values()).filter(p => p.isPeer || (p.ws && p.ws.readyState === 1));
   if (onlinePhones.length === 0) return null;
 
   // 1. If currently pinned session phone is still online, USE IT (100% sticky)!
@@ -52,9 +68,9 @@ function getSessionPhone() {
     if (existing) return existing;
   }
 
-  // 2. Otherwise pick the best device: prefer residential/mobile over datacenter
-  const residential = onlinePhones.filter(p => !isDatacenter(p));
-  const chosen = residential.length > 0 ? residential[0] : onlinePhones[0];
+  // 2. Prefer local real residential phones over peer phones
+  const localReal = onlinePhones.filter(p => !p.isPeer && !isDatacenter(p));
+  const chosen = localReal.length > 0 ? localReal[0] : onlinePhones[0];
 
   activeSessionPhoneId = chosen.id;
   currentStatus.activePhoneUsed = chosen.name;
@@ -120,7 +136,46 @@ localProxyServer.on('connect', (req, clientSocket, head) => {
 
   activeTunnels.set(tunnelId, clientSocket);
 
-  // Tell Phone to open TCP connection to target host
+  // If this phone is borrowed from peer node via cluster mesh, route via peerClientWs:
+  if (phone.isPeer) {
+    if (peerClientWs && peerClientWs.readyState === 1) {
+      peerClientWs.send(JSON.stringify({
+        type: 'tcp_open',
+        tunnelId,
+        host: hostname,
+        port: targetPort
+      }));
+    } else {
+      clientSocket.write('HTTP/1.1 502 Bad Gateway - Shared Pool Disconnected\r\n\r\n');
+      clientSocket.end();
+      activeTunnels.delete(tunnelId);
+      return;
+    }
+
+    clientSocket.on('data', chunk => {
+      if (peerClientWs && peerClientWs.readyState === 1) {
+        peerClientWs.send(JSON.stringify({
+          type: 'tcp_data',
+          tunnelId,
+          data: chunk.toString('base64')
+        }));
+      }
+    });
+
+    clientSocket.on('close', () => {
+      if (peerClientWs && peerClientWs.readyState === 1) {
+        peerClientWs.send(JSON.stringify({ type: 'tcp_close', tunnelId }));
+      }
+      activeTunnels.delete(tunnelId);
+    });
+
+    clientSocket.on('error', () => {
+      activeTunnels.delete(tunnelId);
+    });
+    return;
+  }
+
+  // Otherwise route directly to real local phone:
   phone.ws.send(JSON.stringify({
     type: 'tcp_open',
     tunnelId,
@@ -129,7 +184,7 @@ localProxyServer.on('connect', (req, clientSocket, head) => {
   }));
 
   clientSocket.on('data', chunk => {
-    if (phone.ws.readyState === 1) {
+    if (phone.ws && phone.ws.readyState === 1) {
       phone.ws.send(JSON.stringify({
         type: 'tcp_data',
         tunnelId,
@@ -139,7 +194,7 @@ localProxyServer.on('connect', (req, clientSocket, head) => {
   });
 
   clientSocket.on('close', () => {
-    if (phone.ws.readyState === 1) {
+    if (phone.ws && phone.ws.readyState === 1) {
       phone.ws.send(JSON.stringify({ type: 'tcp_close', tunnelId }));
     }
     activeTunnels.delete(tunnelId);
@@ -154,9 +209,209 @@ localProxyServer.listen(PROXY_PORT, '127.0.0.1', () => {
   log(`Internal Proxy listening on 127.0.0.1:${PROXY_PORT}`);
 });
 
-// 2. HTTP Main Server & WebSocket Hub
+// 2. HTTP Main Server & Multi-WebSocket Mesh Hub
 const mainServer = http.createServer(app);
-const wss = new WebSocketServer({ server: mainServer, path: '/phone-tunnel' });
+const wss = new WebSocketServer({ noServer: true });
+const clusterWss = new WebSocketServer({ noServer: true });
+
+mainServer.on('upgrade', (req, socket, head) => {
+  const parsed = url.parse(req.url);
+  const pathname = parsed.pathname;
+  if (pathname === '/phone-tunnel') {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+  } else if (pathname === '/cluster-tunnel') {
+    clusterWss.handleUpgrade(req, socket, head, (ws) => {
+      clusterWss.emit('connection', ws, req);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+function broadcastRealPhones() {
+  const realPhones = Array.from(connectedPhones.values())
+    .filter(p => !p.isPeer && p.ws && p.ws.readyState === 1)
+    .map(p => ({
+      id: p.id,
+      name: p.name,
+      ip: p.ip,
+      location: p.location,
+      city: p.city,
+      region: p.region,
+      country: p.country,
+      isp: p.isp,
+      connectedAt: p.connectedAt
+    }));
+
+  const payload = JSON.stringify({ type: 'pool_sync', phones: realPhones });
+  for (const peer of clusterPeers) {
+    if (peer.readyState === 1) {
+      try { peer.send(payload); } catch (_) {}
+    }
+  }
+}
+
+// Cluster Mesh Server: shares this node's phones with peer nodes
+clusterWss.on('connection', (peerWs) => {
+  log('[Cluster Mesh] Peer node connected to shared pool tunnel');
+  clusterPeers.add(peerWs);
+  broadcastRealPhones();
+
+  peerWs.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type === 'tcp_open') {
+        const phone = getRealSessionPhone();
+        if (!phone || !phone.ws || phone.ws.readyState !== 1) {
+          try { peerWs.send(JSON.stringify({ type: 'tcp_error', tunnelId: msg.tunnelId, error: 'No phone in pool' })); } catch (_) {}
+          return;
+        }
+        peerTunnels.set(msg.tunnelId, peerWs);
+        phone.ws.send(JSON.stringify({
+          type: 'tcp_open',
+          tunnelId: msg.tunnelId,
+          host: msg.host,
+          port: msg.port
+        }));
+        return;
+      }
+
+      if (msg.type === 'tcp_data') {
+        const phone = getRealSessionPhone();
+        if (phone && phone.ws && phone.ws.readyState === 1) {
+          phone.ws.send(JSON.stringify({
+            type: 'tcp_data',
+            tunnelId: msg.tunnelId,
+            data: msg.data
+          }));
+        }
+        return;
+      }
+
+      if (msg.type === 'tcp_close') {
+        const phone = getRealSessionPhone();
+        if (phone && phone.ws && phone.ws.readyState === 1) {
+          phone.ws.send(JSON.stringify({ type: 'tcp_close', tunnelId: msg.tunnelId }));
+        }
+        peerTunnels.delete(msg.tunnelId);
+        return;
+      }
+    } catch (e) {
+      log('[Cluster Mesh] Peer message error:', e.message);
+    }
+  });
+
+  peerWs.on('close', () => {
+    log('[Cluster Mesh] Peer node disconnected from pool tunnel');
+    clusterPeers.delete(peerWs);
+    for (const [tunId, pWs] of peerTunnels.entries()) {
+      if (pWs === peerWs) peerTunnels.delete(tunId);
+    }
+  });
+
+  peerWs.on('error', () => {
+    clusterPeers.delete(peerWs);
+  });
+});
+
+function handlePeerPoolSync(phones) {
+  const hasLocalReal = Array.from(connectedPhones.values()).some(p => !p.isPeer && p.ws && p.ws.readyState === 1);
+  if (hasLocalReal) return;
+
+  for (const [id, p] of connectedPhones.entries()) {
+    if (p.isPeer) connectedPhones.delete(id);
+  }
+
+  if (Array.isArray(phones) && phones.length > 0) {
+    for (const p of phones) {
+      connectedPhones.set('peer_' + p.id, {
+        id: 'peer_' + p.id,
+        isPeer: true,
+        name: p.name + ' (Shared Cluster Pool)',
+        ip: p.ip,
+        location: p.location,
+        city: p.city,
+        region: p.region,
+        country: p.country,
+        isp: p.isp,
+        connectedAt: p.connectedAt
+      });
+    }
+    log(`[Cluster Mesh] Synced ${phones.length} phone(s) from shared cluster pool.`);
+
+    const phone = getSessionPhone();
+    if (phone && activePlayingUrl && (!currentBrowser || currentStatus.state === 'idle')) {
+      log(`[Cluster Mesh] Phone available from shared pool! Triggering playback for: ${activePlayingUrl}`);
+      startPlayback(activePlayingUrl).catch(() => {});
+    }
+  } else {
+    if (activeSessionPhoneId && activeSessionPhoneId.startsWith('peer_')) {
+      activeSessionPhoneId = null;
+    }
+  }
+}
+
+function connectToPeerPool() {
+  const targetPeer = IS_NODE_2 
+    ? 'wss://phone-hub-player.onrender.com/cluster-tunnel' 
+    : 'wss://phone-hub-player-2.onrender.com/cluster-tunnel';
+
+  try {
+    peerClientWs = new WebSocket(targetPeer);
+  } catch (err) {
+    setTimeout(connectToPeerPool, 5000);
+    return;
+  }
+
+  peerClientWs.on('open', () => {
+    log(`[Cluster Mesh] Connected to shared pool master: ${targetPeer}`);
+  });
+
+  peerClientWs.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type === 'pool_sync') {
+        handlePeerPoolSync(msg.phones);
+        return;
+      }
+      if (msg.type === 'tcp_connected') {
+        const clientSocket = activeTunnels.get(msg.tunnelId);
+        if (clientSocket && !clientSocket.destroyed) {
+          clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        }
+        return;
+      }
+      if (msg.type === 'tcp_data') {
+        const clientSocket = activeTunnels.get(msg.tunnelId);
+        if (clientSocket && !clientSocket.destroyed) {
+          clientSocket.write(Buffer.from(msg.data, 'base64'));
+        }
+        return;
+      }
+      if (msg.type === 'tcp_close' || msg.type === 'tcp_error') {
+        const clientSocket = activeTunnels.get(msg.tunnelId);
+        if (clientSocket) {
+          clientSocket.end();
+          activeTunnels.delete(msg.tunnelId);
+        }
+        return;
+      }
+    } catch (_) {}
+  });
+
+  peerClientWs.on('close', () => {
+    for (const [id, p] of connectedPhones.entries()) {
+      if (p.isPeer) connectedPhones.delete(id);
+    }
+    setTimeout(connectToPeerPool, 4000);
+  });
+
+  peerClientWs.on('error', () => {
+    try { peerClientWs.close(); } catch (_) {}
+  });
+}
 
 function extractClientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
@@ -224,6 +479,9 @@ wss.on('connection', (ws, req) => {
         log(`[Phone Pool] Rejected & disconnected datacenter/Singapore node: "${phoneRecord.name}" (${phoneRecord.ip}, ${phoneRecord.location})`);
         connectedPhones.delete(phoneId);
         try { ws.close(1008, 'Datacenter/Singapore nodes are blocked'); } catch (_) {}
+        broadcastRealPhones();
+      } else {
+        broadcastRealPhones();
       }
     }
   });
@@ -252,8 +510,12 @@ wss.on('connection', (ws, req) => {
             log(`[Phone Pool] Rejected & disconnected datacenter/Singapore node: "${p.name}" (${p.ip}, ${p.location})`);
             connectedPhones.delete(phoneId);
             try { ws.close(1008, 'Datacenter/Singapore nodes are blocked'); } catch (_) {}
+            broadcastRealPhones();
             return;
           }
+
+          // Broadcast phone update to cluster peers
+          broadcastRealPhones();
 
           // If a residential phone connects and active proxy was empty or datacenter, switch to residential!
           const curActive = connectedPhones.get(activeSessionPhoneId);
@@ -272,6 +534,11 @@ wss.on('connection', (ws, req) => {
 
       // Handle TCP Connection Established
       if (msg.type === 'tcp_connected') {
+        const peerWs = peerTunnels.get(msg.tunnelId);
+        if (peerWs && peerWs.readyState === 1) {
+          peerWs.send(JSON.stringify({ type: 'tcp_connected', tunnelId: msg.tunnelId }));
+          return;
+        }
         const clientSocket = activeTunnels.get(msg.tunnelId);
         if (clientSocket && !clientSocket.destroyed) {
           clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
@@ -281,6 +548,11 @@ wss.on('connection', (ws, req) => {
 
       // Handle Data arriving from Phone
       if (msg.type === 'tcp_data') {
+        const peerWs = peerTunnels.get(msg.tunnelId);
+        if (peerWs && peerWs.readyState === 1) {
+          peerWs.send(JSON.stringify({ type: 'tcp_data', tunnelId: msg.tunnelId, data: msg.data }));
+          return;
+        }
         const clientSocket = activeTunnels.get(msg.tunnelId);
         if (clientSocket && !clientSocket.destroyed) {
           clientSocket.write(Buffer.from(msg.data, 'base64'));
@@ -290,6 +562,12 @@ wss.on('connection', (ws, req) => {
 
       // Handle TCP Close
       if (msg.type === 'tcp_close') {
+        const peerWs = peerTunnels.get(msg.tunnelId);
+        if (peerWs && peerWs.readyState === 1) {
+          peerWs.send(JSON.stringify({ type: 'tcp_close', tunnelId: msg.tunnelId }));
+          peerTunnels.delete(msg.tunnelId);
+          return;
+        }
         const clientSocket = activeTunnels.get(msg.tunnelId);
         if (clientSocket) {
           clientSocket.end();
@@ -306,6 +584,7 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     log(`[Phone Pool] Phone disconnected (ID: ${phoneId})`);
     connectedPhones.delete(phoneId);
+    broadcastRealPhones();
     if (activeSessionPhoneId === phoneId) {
       log(`[Session Proxy] Active phone disconnected! Failover to another device...`);
       activeSessionPhoneId = null;
@@ -320,6 +599,7 @@ wss.on('connection', (ws, req) => {
   ws.on('error', (err) => {
     log(`[Phone Pool] Error on phone ${phoneId}: ${err.message}`);
     connectedPhones.delete(phoneId);
+    broadcastRealPhones();
   });
 });
 
@@ -890,4 +1170,5 @@ app.get('/screenshot', async (req, res) => {
 
 mainServer.listen(PORT, () => {
   log(`Render Multi-Phone Hub running on port ${PORT}`);
+  setTimeout(connectToPeerPool, 2500);
 });
