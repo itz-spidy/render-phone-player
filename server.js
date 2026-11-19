@@ -34,10 +34,11 @@ let activeSessionPhoneId = null;
 
 function isDatacenter(p) {
   if (!p) return false;
-  const s = `${p.isp || ''} ${p.name || ''} ${p.location || ''}`.toLowerCase();
+  const s = `${p.isp || ''} ${p.name || ''} ${p.location || ''} ${p.country || ''}`.toLowerCase();
   return s.includes('railway') || s.includes('amazon') || s.includes('aws') || 
          s.includes('google') || s.includes('digitalocean') || s.includes('oracle') || 
          s.includes('azure') || s.includes('linode') || s.includes('hetzner') ||
+         s.includes('singapore') || s.includes('linux-node') ||
          s.includes('datacenter') || s.includes('hosting') || s.includes('server');
 }
 
@@ -217,6 +218,13 @@ wss.on('connection', (ws, req) => {
       phoneRecord.country = info.country || '';
       phoneRecord.isp = info.isp || '';
       phoneRecord.location = [info.city, info.region, info.country].filter(Boolean).join(', ') || 'Unknown';
+
+      // Disconnect immediately if datacenter or Singapore node
+      if (isDatacenter(phoneRecord)) {
+        log(`[Phone Pool] Rejected & disconnected datacenter/Singapore node: "${phoneRecord.name}" (${phoneRecord.ip}, ${phoneRecord.location})`);
+        connectedPhones.delete(phoneId);
+        try { ws.close(1008, 'Datacenter/Singapore nodes are blocked'); } catch (_) {}
+      }
     }
   });
 
@@ -239,16 +247,22 @@ wss.on('connection', (ws, req) => {
           }
           log(`[Phone Pool] Phone registered: "${p.name}" (IP: ${p.ip}, Location: ${p.location}, ISP: ${p.isp})`);
 
+          // Disconnect immediately if datacenter or Singapore node
+          if (isDatacenter(p)) {
+            log(`[Phone Pool] Rejected & disconnected datacenter/Singapore node: "${p.name}" (${p.ip}, ${p.location})`);
+            connectedPhones.delete(phoneId);
+            try { ws.close(1008, 'Datacenter/Singapore nodes are blocked'); } catch (_) {}
+            return;
+          }
+
           // If a residential phone connects and active proxy was empty or datacenter, switch to residential!
-          if (!isDatacenter(p)) {
-            const curActive = connectedPhones.get(activeSessionPhoneId);
-            if (!curActive || isDatacenter(curActive)) {
-              log(`[Session Proxy] Mobile/Residential device "${p.name}" connected! Pinning session proxy to "${p.name}"...`);
-              activeSessionPhoneId = p.id;
-              currentStatus.activePhoneUsed = p.name;
-              if (activePlayingUrl) {
-                startPlayback(activePlayingUrl).catch(() => {});
-              }
+          const curActive = connectedPhones.get(activeSessionPhoneId);
+          if (!curActive || isDatacenter(curActive)) {
+            log(`[Session Proxy] Mobile/Residential device "${p.name}" connected! Pinning session proxy to "${p.name}"...`);
+            activeSessionPhoneId = p.id;
+            currentStatus.activePhoneUsed = p.name;
+            if (activePlayingUrl) {
+              startPlayback(activePlayingUrl).catch(() => {});
             }
           }
         }
@@ -756,6 +770,26 @@ app.get('/phones', (req, res) => {
     return res.json({ count: phoneList.length, phones: phoneList });
   }
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Disconnect / kick a phone from the pool
+app.delete('/api/phones/:id', (req, res) => {
+  const { id } = req.params;
+  if (!connectedPhones.has(id)) {
+    return res.status(404).json({ error: 'Device not found in pool' });
+  }
+  const p = connectedPhones.get(id);
+  log(`[Phone Pool] Kicking device "${p.name}" (${p.ip}) by user request.`);
+  try { p.ws.close(1000, 'Kicked by user'); } catch(_) {}
+  connectedPhones.delete(id);
+  if (activeSessionPhoneId === id) {
+    activeSessionPhoneId = null;
+    const nextPhone = getSessionPhone();
+    if (nextPhone && activePlayingUrl) {
+      startPlayback(activePlayingUrl).catch(() => {});
+    }
+  }
+  res.json({ success: true, removed: p.name });
 });
 
 app.get('/api/auth-debug', async (req, res) => {
