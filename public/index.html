@@ -3,13 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Phone Hub & YouTube Stream Player</title>
+  <title>Render Phone Hub & YouTube Stream Cluster</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📱</text></svg>">
   <style>
     :root {
-      --bg: #090d16;
-      --card-bg: #121826;
-      --border: #232d42;
+      --bg: #070a12;
+      --card-bg: #0f1523;
+      --card-inner: #0a0e1a;
+      --border: #1f293d;
+      --border-accent: #2d3b55;
       --text: #f0f6fc;
       --text-muted: #8b9bb4;
       --primary: #3b82f6;
@@ -19,182 +21,260 @@
       --danger: #ef4444;
       --danger-hover: #dc2626;
       --warning: #f59e0b;
+      --purple: #8b5cf6;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
     body { background: var(--bg); color: var(--text); padding: 16px; line-height: 1.5; min-height: 100vh; }
-    .container { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
     
     /* Header */
     header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; flex-wrap: wrap; gap: 12px; }
-    .title-group { display: flex; align-items: center; gap: 10px; }
+    .title-group { display: flex; align-items: center; gap: 12px; }
     .title-group h1 { font-size: 1.35rem; font-weight: 700; color: #fff; letter-spacing: -0.5px; }
-    .status-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; padding: 4px 10px; border-radius: 9999px; font-weight: 600; background: var(--success-bg); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .header-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; padding: 4px 10px; border-radius: 9999px; font-weight: 600; border: 1px solid; }
+    .badge-success { background: var(--success-bg); color: var(--success); border-color: rgba(16, 185, 129, 0.3); }
+    .badge-purple { background: rgba(139, 92, 246, 0.15); color: #c4b5fd; border-color: rgba(139, 92, 246, 0.3); }
+    .badge-blue { background: rgba(59, 130, 246, 0.15); color: #93c5fd; border-color: rgba(59, 130, 246, 0.3); }
     .pulse-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: pulse 2s infinite; }
     @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.8); } 100% { opacity: 1; transform: scale(1); } }
 
-    /* Stats Grid */
-    .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-    .stat-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
-    .stat-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
-    .stat-val { font-size: 1.25rem; font-weight: 700; margin-top: 4px; color: #fff; }
-
-    /* Stream Controller Card */
-    .ctrl-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
-    .ctrl-card h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
-    .input-group { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-    .input-group input { flex: 1; min-width: 260px; background: #0c101b; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; color: #fff; font-size: 0.95rem; outline: none; transition: border-color 0.2s; }
-    .input-group input:focus { border-color: var(--primary); }
+    /* Unified Master Controller Card */
+    .ctrl-card { background: var(--card-bg); border: 1px solid var(--border-accent); border-radius: 12px; padding: 20px; box-shadow: 0 4px 24px rgba(0,0,0,0.3); }
+    .ctrl-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }
+    .ctrl-header h2 { font-size: 1.1rem; font-weight: 700; display: flex; align-items: center; gap: 8px; color: #fff; }
+    .target-selector { display: flex; gap: 6px; background: var(--card-inner); padding: 4px; border-radius: 8px; border: 1px solid var(--border); }
+    .target-btn { background: transparent; border: none; color: var(--text-muted); padding: 6px 12px; border-radius: 6px; font-size: 0.78rem; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+    .target-btn.active { background: var(--primary); color: #fff; }
+    
+    .input-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+    .input-row input { flex: 1; min-width: 280px; background: var(--card-inner); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; color: #fff; font-size: 0.95rem; outline: none; transition: border-color 0.2s; }
+    .input-row input:focus { border-color: var(--primary); }
+    
     .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 12px 20px; border-radius: 8px; font-weight: 600; font-size: 0.9rem; cursor: pointer; border: none; transition: all 0.2s; text-decoration: none; }
     .btn-primary { background: var(--primary); color: #fff; }
     .btn-primary:hover { background: var(--primary-hover); }
     .btn-danger { background: var(--danger); color: #fff; }
     .btn-danger:hover { background: var(--danger-hover); }
-    .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
-    .btn-outline:hover { background: #1a2337; color: #fff; }
-    .url-banner { background: #0c101b; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 0.85rem; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-    .url-banner a { color: var(--primary); text-decoration: none; word-break: break-all; }
+    .btn-sm { padding: 6px 12px; font-size: 0.78rem; border-radius: 6px; }
 
-    /* Live Preview & Phone Pool Grid */
-    .grid-2col { display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; }
-    @media (max-width: 800px) { .grid-2col { grid-template-columns: 1fr; } }
-    
-    .panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-    .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-    .panel-title { font-size: 0.95rem; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 8px; }
+    /* Summary Bar */
+    .summary-bar { background: var(--card-inner); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
 
-    /* Video Preview */
+    /* Dual Node Grid: Side by Side Cards */
+    .nodes-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 860px) { .nodes-grid { grid-template-columns: 1fr; } }
+
+    .node-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+    .node-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+    .node-title-group { display: flex; align-items: center; gap: 8px; }
+    .node-badge-tag { font-size: 0.72rem; padding: 2px 8px; border-radius: 6px; font-weight: 700; text-transform: uppercase; }
+    .node1-tag { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .node2-tag { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+
+    .node-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .mini-stat { background: var(--card-inner); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+    .mini-stat-lbl { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; }
+    .mini-stat-val { font-size: 0.95rem; font-weight: 700; margin-top: 2px; }
+
+    /* Video Frame Preview */
     .video-frame-box { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; position: relative; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); }
     .video-frame-box img { width: 100%; height: 100%; object-fit: contain; }
-    .preview-badge { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); padding: 4px 8px; border-radius: 6px; font-size: 0.72rem; color: #fff; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+    .frame-overlay { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.75); backdrop-filter: blur(4px); padding: 3px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; color: #fff; }
 
-    /* Phone Cards */
-    .phones-container { display: flex; flex-direction: column; gap: 10px; max-height: 380px; overflow-y: auto; }
-    .phone-item { background: #0c101b; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+    .video-meta-box { background: var(--card-inner); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 0.82rem; }
+    .video-title-line { font-weight: 700; color: #fff; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .video-url-link { color: var(--primary); text-decoration: none; word-break: break-all; font-size: 0.78rem; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Shared Proxy Section */
+    .proxy-section { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+    .proxy-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .proxy-header h3 { font-size: 1rem; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 8px; }
+    
+    .phone-item { background: var(--card-inner); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
     .phone-top { display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: 0.9rem; }
-    .phone-details { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 0.8rem; }
+    .phone-details { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px 12px; font-size: 0.8rem; }
+    @media (max-width: 600px) { .phone-details { grid-template-columns: auto 1fr; } }
     .phone-details .k { color: var(--text-muted); }
-    .phone-details .v { color: #fff; word-break: break-all; }
+    .phone-details .v { color: #fff; }
     .ip-tag { font-family: monospace; color: #60a5fa; font-weight: 600; }
 
-    /* Empty state & Termux command */
-    .empty-pool { text-align: center; padding: 20px 10px; }
-    .empty-pool h4 { color: var(--warning); margin-bottom: 8px; font-size: 0.95rem; }
-    .empty-pool p { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; }
-    .cmd-box { background: #000; border: 1px solid var(--border); border-radius: 6px; padding: 10px; text-align: left; position: relative; }
-    .cmd-box code { font-family: monospace; font-size: 0.74rem; color: #34d399; word-break: break-all; display: block; max-height: 80px; overflow-y: auto; }
+    /* Termux Command Box */
+    .cmd-box { background: #000; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; text-align: left; position: relative; margin-top: 10px; }
+    .cmd-box code { font-family: monospace; font-size: 0.74rem; color: #34d399; word-break: break-all; display: block; max-height: 90px; overflow-y: auto; }
     .copy-btn { position: absolute; top: 6px; right: 6px; background: #232d42; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; font-size: 0.7rem; cursor: pointer; }
     .copy-btn:hover { background: #3b82f6; }
 
-    /* Logs Terminal */
-    .terminal-box { background: #05080e; border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
-    .terminal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 0.85rem; color: var(--text-muted); }
-    .terminal-content { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.78rem; color: #a7f3d0; background: transparent; height: 160px; overflow-y: auto; white-space: pre-wrap; line-height: 1.4; }
+    /* Logs Terminal Box */
+    .logs-section { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+    .logs-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
+    .logs-tabs { display: flex; gap: 6px; }
+    .log-tab-btn { background: var(--card-inner); border: 1px solid var(--border); color: var(--text-muted); padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; cursor: pointer; }
+    .log-tab-btn.active { background: #1e293b; color: #fff; border-color: #3b82f6; font-weight: 600; }
+    .terminal-content { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.78rem; color: #a7f3d0; background: #05080e; border: 1px solid var(--border); border-radius: 8px; padding: 12px; height: 160px; overflow-y: auto; white-space: pre-wrap; line-height: 1.4; }
   </style>
 </head>
 <body>
   <div class="container">
+    <!-- Header -->
     <header>
       <div class="title-group">
-        <span style="font-size: 1.6rem;">📱</span>
+        <span style="font-size: 1.8rem;">📱</span>
         <div>
-          <h1>Render Phone Hub & Player</h1>
-          <div style="font-size: 0.78rem; color: var(--text-muted);">Residential Proxy Pool & 24/7 Stream Engine</div>
+          <h1>YouTube Multi-Render Hub</h1>
+          <div style="font-size: 0.78rem; color: var(--text-muted);">Unified Multi-Node Stream Controller & Shared Phone Residential Proxy</div>
         </div>
       </div>
-      <div class="status-badge">
-        <span class="pulse-dot"></span>
-        <span id="hubStatusText">Hub Online</span>
+      <div class="header-badges">
+        <span class="badge badge-purple" id="clusterStatusBadge">● Dual Node Cluster Live</span>
+        <span class="badge badge-blue" id="proxyStatusBadge">📱 1 Phone Bridges Both</span>
       </div>
     </header>
 
-    <!-- Merged Cluster Navigation -->
-    <div style="display:flex;gap:10px;align-items:center;background:#0c101b;padding:10px 14px;border-radius:8px;border:1px solid var(--border);font-size:0.82rem;flex-wrap:wrap;">
-      <span style="color:var(--text-muted);font-weight:600;">Merged Cluster:</span>
-      <a href="https://phone-hub-player.onrender.com" id="node1Badge" style="padding:4px 12px;border-radius:6px;text-decoration:none;font-weight:600;border:1px solid #334155;color:#94a3b8;background:#1e293b;">🌐 Node 1 (Account 1)</a>
-      <a href="https://phone-hub-player-2.onrender.com" id="node2Badge" style="padding:4px 12px;border-radius:6px;text-decoration:none;font-weight:600;border:1px solid #334155;color:#94a3b8;background:#1e293b;">🌐 Node 2 (Account 2)</a>
-      <span style="color:#38bdf8;margin-left:auto;font-size:0.75rem;">⚡ 1 Phone Bridges to BOTH Nodes Simultaneously</span>
-    </div>
-
-    <!-- Stat Badges -->
-    <div class="stats-row">
-      <div class="stat-card">
-        <div class="stat-label">Connected Pool</div>
-        <div class="stat-val" id="statPhoneCount" style="color: #60a5fa;">0 Online</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Active Tunnel</div>
-        <div class="stat-val" id="statActiveDevice" style="color: #38bdf8; font-size: 1.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">None</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Playback State</div>
-        <div class="stat-val" id="statPlaybackState" style="color: #10b981;">IDLE</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">YouTube Account</div>
-        <div class="stat-val" id="statAuth" style="color: #f59e0b; font-size: 1.1rem;">Checking...</div>
-      </div>
-    </div>
-
-    <!-- Interactive Stream Controls -->
+    <!-- Unified Master Controller -->
     <div class="ctrl-card">
-      <h2>🎛️ Stream Controller</h2>
-      <div class="input-group">
-        <input type="text" id="streamUrlInput" placeholder="Enter YouTube Video or Live Stream URL (https://www.youtube.com/watch?v=...)">
-        <button class="btn btn-primary" id="btnStart" onclick="setStreamUrl()">▶️ Start Stream</button>
-        <button class="btn btn-danger" id="btnStop" onclick="clearStreamUrl()">⏹️ Stop</button>
-      </div>
-      <div class="url-banner">
-        <span><strong>Active Target:</strong> <span id="displayUrlText"><span style="color:var(--text-muted)">Loading...</span></span></span>
-        <span id="actionFeedback" style="font-size: 0.8rem; font-weight: 600;"></span>
-      </div>
-    </div>
-
-    <!-- 2 Column: Live Video Preview + Connected Phones -->
-    <div class="grid-2col">
-      <!-- Live Screen -->
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">📸 Video Preview</div>
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span style="font-size: 0.75rem; color: var(--text-muted);" id="snapTime">On-Demand Only</span>
-            <button id="snapBtn" onclick="updateSnapshot()" style="background:#1e293b;color:#38bdf8;border:1px solid #38bdf8;padding:4px 10px;border-radius:6px;font-size:0.75rem;cursor:pointer;font-weight:600;">📸 Capture Frame</button>
-          </div>
-        </div>
-        <div class="video-frame-box" id="frameBox">
-          <img id="liveSnapshot" src="" alt="Live Stream Frame" style="display:none;" onerror="handleSnapError()">
-          <div id="snapPlaceholder" style="color:#8b9bb4;font-size:0.85rem;text-align:center;padding:25px;">
-            💤 Auto-capture disabled to eliminate CPU load.<br>
-            Click <strong style="color:#38bdf8;">"📸 Capture Frame"</strong> above to view a frame on-demand.
-          </div>
+      <div class="ctrl-header">
+        <h2>🎛️ Master Stream Controller</h2>
+        <div class="target-selector">
+          <button class="target-btn active" id="tgtBoth" onclick="setTarget('both')">🚀 Both Nodes (Parallel)</button>
+          <button class="target-btn" id="tgtNode1" onclick="setTarget('node1')">Node 1 Only</button>
+          <button class="target-btn" id="tgtNode2" onclick="setTarget('node2')">Node 2 Only</button>
         </div>
       </div>
-
-      <!-- Connected Phones Pool -->
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">📶 Phone Residential Pool</div>
-          <a href="/api/status" target="_blank" style="font-size: 0.75rem; color: var(--primary); text-decoration:none;">JSON API &rarr;</a>
-        </div>
-        <div class="phones-container" id="phonesContainer">
-          <div class="empty-pool">
-            <h4>No Phones Connected</h4>
-            <p>Paste this 1-click command in Termux to connect Phone 1:</p>
-            <div class="cmd-box">
-              <button class="copy-btn" onclick="copyTermuxCmd()">📋 Copy</button>
-              <code id="termuxCmdText">termux-wake-lock &amp;&amp; mkdir -p ~/phone-bridge &amp;&amp; cd ~/phone-bridge &amp;&amp; npm init -y &gt; /dev/null 2&gt;&amp;1 &amp;&amp; npm install --silent ws &amp;&amp; curl -s -O https://raw.githubusercontent.com/itz-spidy/render-phone-player/main/phone_bridge.js &amp;&amp; tmux kill-session -t proxy 2&gt;/dev/null; tmux new-session -d -s proxy 'node phone_bridge.js "Phone 1"'</code>
-            </div>
-          </div>
-        </div>
+      <div class="input-row">
+        <input type="text" id="streamUrlInput" placeholder="Enter YouTube Video or Playlist URL (https://www.youtube.com/watch?v=...)">
+        <button class="btn btn-primary" id="btnStart" onclick="startStream()">▶️ Start Stream</button>
+        <button class="btn btn-danger" id="btnStop" onclick="stopStream()">⏹️ Stop Stream</button>
+      </div>
+      <div class="summary-bar">
+        <span><strong>Dispatch Target:</strong> <span id="targetLabelText" style="color:#60a5fa; font-weight:600;">Both Nodes (Parallel)</span></span>
+        <span id="actionFeedback" style="font-size: 0.85rem; font-weight: 600;"></span>
       </div>
     </div>
 
-    <!-- Terminal Logs Box -->
-    <div class="terminal-box">
-      <div class="terminal-header">
-        <span>📜 System Activity Logs</span>
-        <div style="display:flex;gap:12px;">
-          <a href="javascript:void(0)" onclick="refreshLogs()" style="color: var(--primary); font-size:0.8rem; text-decoration: none;">🔄 Refresh Logs</a>
-          <a href="/logs" target="_blank" style="color: var(--text-muted); font-size:0.8rem; text-decoration: none;">Full Logs &rarr;</a>
+    <!-- Dual Nodes Grid: Side by Side -->
+    <div class="nodes-grid">
+      <!-- Node 1 Card -->
+      <div class="node-card" id="cardNode1">
+        <div class="node-header">
+          <div class="node-title-group">
+            <span class="node-badge-tag node1-tag">Node 1</span>
+            <strong style="color:#fff; font-size:1rem;">Account 1 Hub</strong>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="badge badge-success" id="n1LiveBadge">🟢 Online</span>
+            <a href="https://phone-hub-player.onrender.com" target="_blank" style="font-size:0.75rem;color:var(--text-muted);text-decoration:none;" title="Open Node 1 directly">↗ Direct</a>
+          </div>
+        </div>
+
+        <div class="node-stats">
+          <div class="mini-stat">
+            <div class="mini-stat-lbl">Playback State</div>
+            <div class="mini-stat-val" id="n1State" style="color:#10b981;">IDLE</div>
+          </div>
+          <div class="mini-stat">
+            <div class="mini-stat-lbl">YouTube Auth</div>
+            <div class="mini-stat-val" id="n1Auth" style="color:#f59e0b;">Checking...</div>
+          </div>
+        </div>
+
+        <div class="video-meta-box">
+          <div class="video-title-line" id="n1Title">No active stream</div>
+          <a class="video-url-link" id="n1Url" href="#" target="_blank">Idle</a>
+        </div>
+
+        <div class="video-frame-box" id="n1FrameBox">
+          <img id="n1Snapshot" src="" alt="Node 1 Frame" style="display:none;" onerror="handleNodeSnapError(1)">
+          <div id="n1Placeholder" style="color:#8b9bb4;font-size:0.8rem;text-align:center;padding:20px;">
+            💤 Auto-capture disabled for CPU efficiency.<br>
+            Click below to capture a live frame on-demand.
+          </div>
+          <div class="frame-overlay" id="n1Overlay">Node 1 Frame</div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <button class="btn btn-primary btn-sm" id="n1SnapBtn" onclick="captureFrame(1)">📸 Capture Frame</button>
+          <button class="btn btn-danger btn-sm" onclick="stopSingleNode(1)">⏹️ Stop Node 1</button>
+        </div>
+      </div>
+
+      <!-- Node 2 Card -->
+      <div class="node-card" id="cardNode2">
+        <div class="node-header">
+          <div class="node-title-group">
+            <span class="node-badge-tag node2-tag">Node 2</span>
+            <strong style="color:#fff; font-size:1rem;">Account 2 Hub (New)</strong>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="badge badge-success" id="n2LiveBadge">🟢 Online</span>
+            <a href="https://phone-hub-player-2.onrender.com" target="_blank" style="font-size:0.75rem;color:var(--text-muted);text-decoration:none;" title="Open Node 2 directly">↗ Direct</a>
+          </div>
+        </div>
+
+        <div class="node-stats">
+          <div class="mini-stat">
+            <div class="mini-stat-lbl">Playback State</div>
+            <div class="mini-stat-val" id="n2State" style="color:#10b981;">IDLE</div>
+          </div>
+          <div class="mini-stat">
+            <div class="mini-stat-lbl">YouTube Auth</div>
+            <div class="mini-stat-val" id="n2Auth" style="color:#f59e0b;">Checking...</div>
+          </div>
+        </div>
+
+        <div class="video-meta-box">
+          <div class="video-title-line" id="n2Title">No active stream</div>
+          <a class="video-url-link" id="n2Url" href="#" target="_blank">Idle</a>
+        </div>
+
+        <div class="video-frame-box" id="n2FrameBox">
+          <img id="n2Snapshot" src="" alt="Node 2 Frame" style="display:none;" onerror="handleNodeSnapError(2)">
+          <div id="n2Placeholder" style="color:#8b9bb4;font-size:0.8rem;text-align:center;padding:20px;">
+            💤 Auto-capture disabled for CPU efficiency.<br>
+            Click below to capture a live frame on-demand.
+          </div>
+          <div class="frame-overlay" id="n2Overlay">Node 2 Frame</div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <button class="btn btn-primary btn-sm" id="n2SnapBtn" onclick="captureFrame(2)">📸 Capture Frame</button>
+          <button class="btn btn-danger btn-sm" onclick="stopSingleNode(2)">⏹️ Stop Node 2</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shared Phone Residential Proxy Pool -->
+    <div class="proxy-section">
+      <div class="proxy-header">
+        <h3>📶 Shared Phone Residential Proxy Pool</h3>
+        <span class="badge badge-success" id="phoneStatusBadge">Checking Phones...</span>
+      </div>
+      <div style="font-size:0.82rem; color:var(--text-muted); margin-bottom:12px;">
+        ⚡ <strong>One Phone Bridges Both Nodes:</strong> The connected phone provides a shared residential IP tunnel to both Render Node 1 and Node 2 simultaneously.
+      </div>
+
+      <div id="phonePoolContainer">
+        <div style="color:var(--text-muted);font-size:0.85rem;">Connecting to phone pool...</div>
+      </div>
+
+      <!-- Termux Command -->
+      <div style="margin-top:14px;">
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">1-Click Termux Command (Connects Phone to BOTH Nodes):</div>
+        <div class="cmd-box">
+          <button class="copy-btn" onclick="copyTermuxCmd()">📋 Copy</button>
+          <code id="termuxCode">termux-wake-lock &amp;&amp; mkdir -p ~/phone-bridge &amp;&amp; cd ~/phone-bridge &amp;&amp; npm init -y &gt; /dev/null 2&gt;&amp;1 &amp;&amp; npm install --silent ws &amp;&amp; curl -s -O https://raw.githubusercontent.com/itz-spidy/render-phone-player/main/phone_bridge.js &amp;&amp; tmux kill-session -t proxy 2&gt;/dev/null; tmux new-session -d -s proxy 'node phone_bridge.js "Phone 1"'</code>
+        </div>
+      </div>
+    </div>
+
+    <!-- Logs Box -->
+    <div class="logs-section">
+      <div class="logs-header">
+        <span style="font-size:0.9rem;font-weight:600;color:#fff;">📜 Cluster Activity Logs</span>
+        <div class="logs-tabs">
+          <button class="log-tab-btn active" id="tabNode1" onclick="switchLogTab(1)">Node 1 Logs</button>
+          <button class="log-tab-btn" id="tabNode2" onclick="switchLogTab(2)">Node 2 Logs</button>
+          <button class="log-tab-btn" onclick="refreshActiveLogs()" style="color:var(--primary);">🔄 Refresh</button>
         </div>
       </div>
       <div class="terminal-content" id="terminalLogs">Loading logs...</div>
@@ -202,252 +282,285 @@
   </div>
 
   <script>
-    const termuxCommand = 'termux-wake-lock && mkdir -p ~/phone-bridge && cd ~/phone-bridge && npm init -y > /dev/null 2>&1 && npm install --silent ws && curl -s -O https://raw.githubusercontent.com/itz-spidy/render-phone-player/main/phone_bridge.js && tmux kill-session -t proxy 2>/dev/null; tmux new-session -d -s proxy \'node phone_bridge.js "Phone 1"\'';
+    const NODE1_BASE = 'https://phone-hub-player.onrender.com';
+    const NODE2_BASE = 'https://phone-hub-player-2.onrender.com';
 
-    // Highlight current node in cluster bar
-    if (window.location.hostname.includes('phone-hub-player-2')) {
-      const b2 = document.getElementById('node2Badge');
-      if (b2) { b2.style.background = '#10b981'; b2.style.color = '#fff'; b2.style.borderColor = '#10b981'; b2.textContent = '● Node 2 (Account 2 - Active)'; }
-    } else {
-      const b1 = document.getElementById('node1Badge');
-      if (b1) { b1.style.background = '#10b981'; b1.style.color = '#fff'; b1.style.borderColor = '#10b981'; b1.textContent = '● Node 1 (Account 1 - Active)'; }
-    }
+    let currentTarget = 'both'; // 'both', 'node1', 'node2'
+    let activeLogNode = 1;
+
+    const termuxCommand = 'termux-wake-lock && mkdir -p ~/phone-bridge && cd ~/phone-bridge && npm init -y > /dev/null 2>&1 && npm install --silent ws && curl -s -O https://raw.githubusercontent.com/itz-spidy/render-phone-player/main/phone_bridge.js && tmux kill-session -t proxy 2>/dev/null; tmux new-session -d -s proxy \'node phone_bridge.js "Phone 1"\'';
 
     function copyTermuxCmd() {
       navigator.clipboard.writeText(termuxCommand).then(() => {
-        alert('Termux command copied to clipboard! Paste it into Termux on your phone.');
+        alert('Termux command copied! Paste it in Termux to bridge this phone to BOTH Render nodes.');
       });
     }
 
-    function handleSnapError() {
-      const img = document.getElementById('liveSnapshot');
-      img.style.display = 'none';
-      const box = document.getElementById('frameBox');
-      if (!document.getElementById('snapPlaceholder')) {
-        const ph = document.createElement('div');
-        ph.id = 'snapPlaceholder';
-        ph.style.color = '#8b9bb4';
-        ph.style.fontSize = '0.85rem';
-        ph.style.textAlign = 'center';
-        ph.style.padding = '20px';
-        ph.innerHTML = '📴 Stream is currently idle or buffering.<br>Connect your phone & start a video above.';
-        box.appendChild(ph);
-      }
+    function setTarget(t) {
+      currentTarget = t;
+      document.getElementById('tgtBoth').classList.toggle('active', t === 'both');
+      document.getElementById('tgtNode1').classList.toggle('active', t === 'node1');
+      document.getElementById('tgtNode2').classList.toggle('active', t === 'node2');
+      
+      const lbl = document.getElementById('targetLabelText');
+      if (t === 'both') lbl.textContent = 'Both Nodes (Parallel Playback)';
+      else if (t === 'node1') lbl.textContent = 'Node 1 Only (Account 1)';
+      else lbl.textContent = 'Node 2 Only (Account 2)';
     }
 
-    async function setStreamUrl() {
+    // Stream control
+    async function startStream() {
       const input = document.getElementById('streamUrlInput');
       const url = input.value.trim();
       if (!url) return alert('Please enter a YouTube video URL');
+
       const fb = document.getElementById('actionFeedback');
       fb.style.color = '#3b82f6';
-      fb.textContent = 'Updating stream...';
+      fb.textContent = `Dispatching stream to ${currentTarget.toUpperCase()}...`;
+
+      const targets = [];
+      if (currentTarget === 'both' || currentTarget === 'node1') targets.push({ name: 'Node 1', base: NODE1_BASE });
+      if (currentTarget === 'both' || currentTarget === 'node2') targets.push({ name: 'Node 2', base: NODE2_BASE });
 
       try {
-        const res = await fetch('/api/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url })
+        const results = await Promise.allSettled(targets.map(t => 
+          fetch(`${t.base}/api/stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+          }).then(r => r.json())
+        ));
+
+        let successCount = 0;
+        results.forEach((r, idx) => {
+          if (r.status === 'fulfilled' && r.value.success) successCount++;
         });
-        const d = await res.json();
-        if (d.success) {
+
+        if (successCount > 0) {
           fb.style.color = '#10b981';
-          fb.textContent = '✓ Stream URL sent!';
-          setTimeout(refreshData, 1000);
+          fb.textContent = `✓ Started on ${successCount}/${targets.length} target node(s)!`;
+          setTimeout(refreshClusterData, 1200);
         } else {
           fb.style.color = '#ef4444';
-          fb.textContent = 'Error: ' + (d.error || 'Failed');
+          fb.textContent = 'Failed to start stream on target node(s).';
         }
-      } catch (e) {
+      } catch (err) {
         fb.style.color = '#ef4444';
-        fb.textContent = e.message;
+        fb.textContent = err.message;
       }
     }
 
-    async function clearStreamUrl() {
+    async function stopStream() {
       const fb = document.getElementById('actionFeedback');
       fb.style.color = '#ef4444';
-      fb.textContent = 'Stopping stream...';
+      fb.textContent = 'Stopping playback...';
+
+      const targets = [];
+      if (currentTarget === 'both' || currentTarget === 'node1') targets.push(NODE1_BASE);
+      if (currentTarget === 'both' || currentTarget === 'node2') targets.push(NODE2_BASE);
+
       try {
-        const res = await fetch('/api/stream', { method: 'DELETE' });
-        const d = await res.json();
-        if (d.success) {
-          document.getElementById('streamUrlInput').value = '';
-          fb.style.color = '#10b981';
-          fb.textContent = '✓ Playback stopped.';
-          setTimeout(refreshData, 1000);
-        }
+        await Promise.allSettled(targets.map(base => fetch(`${base}/api/stream`, { method: 'DELETE' })));
+        fb.style.color = '#10b981';
+        fb.textContent = '✓ Playback stopped.';
+        document.getElementById('streamUrlInput').value = '';
+        setTimeout(refreshClusterData, 1000);
       } catch (e) {
         fb.textContent = e.message;
       }
     }
 
-    async function kickPhone(phoneId) {
-      if (!confirm('Disconnect and remove this device from the pool?')) return;
+    async function stopSingleNode(nodeNum) {
+      const base = nodeNum === 1 ? NODE1_BASE : NODE2_BASE;
       try {
-        const res = await fetch('/api/phones/' + phoneId, { method: 'DELETE' });
-        const d = await res.json();
-        if (d.success) {
-          refreshData();
-        } else {
-          alert('Failed: ' + (d.error || 'Unknown'));
-        }
-      } catch (e) {
-        alert('Error: ' + e.message);
-      }
-    }
-
-    async function selectPhone(phoneId) {
-      try {
-        const res = await fetch('/api/select-phone', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phoneId })
-        });
-        const d = await res.json();
-        if (d.success) {
-          refreshData();
-        } else {
-          alert('Device switch failed: ' + (d.error || 'Unknown'));
-        }
-      } catch (e) {
-        alert('Switch failed: ' + e.message);
-      }
-    }
-
-    // Refresh Preview Image (On-Demand only)
-    function updateSnapshot() {
-      const snapBtn = document.getElementById('snapBtn');
-      if (snapBtn) snapBtn.textContent = 'Capturing...';
-      const img = document.getElementById('liveSnapshot');
-      const testImg = new Image();
-      testImg.src = '/screenshot?t=' + Date.now();
-      testImg.onload = () => {
-        img.src = testImg.src;
-        img.style.display = 'block';
-        const ph = document.getElementById('snapPlaceholder');
-        if (ph) ph.remove();
-        document.getElementById('snapTime').textContent = 'Captured at ' + new Date().toLocaleTimeString();
-        if (snapBtn) snapBtn.textContent = '📸 Refresh Frame';
-      };
-      testImg.onerror = () => {
-        handleSnapError();
-        if (snapBtn) snapBtn.textContent = '📸 Refresh Frame';
-      };
-    }
-
-    // Refresh Data & Phones
-    async function refreshData() {
-      try {
-        const res = await fetch('/api/status?t=' + Date.now());
-        if (!res.ok) return;
-        const d = await res.json();
-
-        // Update stats
-        const count = d.phonesOnlineCount || 0;
-        const countElem = document.getElementById('statPhoneCount');
-        countElem.textContent = count + ' Online';
-        countElem.style.color = count > 0 ? '#10b981' : '#f59e0b';
-
-        const state = (d.status && d.status.state) ? d.status.state.toUpperCase() : 'IDLE';
-        document.getElementById('statPlaybackState').textContent = state;
-
-        const displayUrl = document.getElementById('displayUrlText');
-        if (d.activePlayingUrl) {
-          const vMeta = d.status && d.status.videoDetails;
-          let bannerHtml = '<a href="' + d.activePlayingUrl + '" target="_blank">' + d.activePlayingUrl + '</a>';
-          if (vMeta && vMeta.title) {
-            bannerHtml = '<div style="margin-bottom:4px; font-weight:700; color:#fff;">🎬 ' + vMeta.title + (vMeta.channel ? ' <span style="font-size:0.8rem; color:#8b9bb4; font-weight:400;">(' + vMeta.channel + ')</span>' : '') + (vMeta.isLive ? ' <span style="background:#ef4444; color:#fff; font-size:0.68rem; padding:1px 5px; border-radius:3px;">LIVE</span>' : '') + '</div>' + bannerHtml;
-          }
-          displayUrl.innerHTML = bannerHtml;
-          if (!document.getElementById('streamUrlInput').value) {
-            document.getElementById('streamUrlInput').value = d.activePlayingUrl;
-          }
-        } else {
-          displayUrl.innerHTML = '<span style="color:var(--text-muted)">None (Idle)</span>';
-        }
-
-        // Update active device & auth
-        const activeDevElem = document.getElementById('statActiveDevice');
-        if (activeDevElem) {
-          if (d.activePhoneUsed) {
-            activeDevElem.textContent = d.activePhoneUsed;
-            activeDevElem.style.color = '#38bdf8';
-          } else {
-            activeDevElem.textContent = 'None (Waiting)';
-            activeDevElem.style.color = '#8b9bb4';
-          }
-        }
-
-        const authElem = document.getElementById('statAuth');
-        if (authElem) {
-          if (d.status && d.status.isLoggedIn) {
-            authElem.textContent = '✓ Logged In';
-            authElem.style.color = '#10b981';
-          } else if (state === 'PLAYING') {
-            authElem.textContent = 'Guest / Anonymous';
-            authElem.style.color = '#f59e0b';
-          } else {
-            authElem.textContent = 'Idle';
-            authElem.style.color = '#8b9bb4';
-          }
-        }
-
-        // Render phones
-        const container = document.getElementById('phonesContainer');
-        if (d.connectedPhones && d.connectedPhones.length > 0) {
-          container.innerHTML = d.connectedPhones.map(p => `
-            <div class="phone-item" style="${p.isActive ? 'border-color: #3b82f6; background: #0c172e;' : ''}">
-              <div class="phone-top">
-                <span>📱 ${p.name || 'Phone'} ${p.isActive ? '<span style="background:rgba(59,130,246,0.25);color:#60a5fa;font-size:0.7rem;padding:2px 7px;border-radius:4px;margin-left:6px;border:1px solid rgba(96,165,250,0.3);">ACTIVE TUNNEL</span>' : ''}</span>
-                <div style="display:flex;align-items:center;gap:6px;">
-                  ${!p.isActive ? `<button onclick="selectPhone('${p.id}')" style="background:#232d42;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:0.75rem;cursor:pointer;">Use Tunnel</button>` : '<span style="color: #10b981; font-size: 0.75rem; font-weight: 700;">● Pinned</span>'}
-                  <button onclick="kickPhone('${p.id}')" title="Disconnect device" style="background:rgba(239,68,68,0.2);color:#ef4444;border:1px solid rgba(239,68,68,0.3);padding:3px 7px;border-radius:4px;font-size:0.75rem;cursor:pointer;">✕</button>
-                </div>
-              </div>
-              <div class="phone-details">
-                <span class="k">IP:</span><span class="v ip-tag">${p.ip || 'Unknown'} ${p.isDatacenter ? '<span style="color:#f59e0b;font-size:0.7rem;">(Datacenter)</span>' : '<span style="color:#10b981;font-size:0.7rem;">(Residential)</span>'}</span>
-                <span class="k">Loc:</span><span class="v">${p.location || 'Detecting...'}</span>
-                <span class="k">ISP:</span><span class="v">${p.isp || 'Mobile Network'}</span>
-                <span class="k">Joined:</span><span class="v">${new Date(p.connectedAt).toLocaleTimeString()}</span>
-              </div>
-            </div>
-          `).join('');
-        } else {
-          container.innerHTML = `
-            <div class="empty-pool">
-              <h4>No Phones Connected</h4>
-              <p>Paste this 1-click command in Termux to connect Phone 1:</p>
-              <div class="cmd-box">
-                <button class="copy-btn" onclick="copyTermuxCmd()">📋 Copy</button>
-                <code>${termuxCommand}</code>
-              </div>
-            </div>
-          `;
-        }
-
+        await fetch(`${base}/api/stream`, { method: 'DELETE' });
+        setTimeout(refreshClusterData, 1000);
       } catch (_) {}
     }
 
-    // Refresh logs
-    async function refreshLogs() {
+    // On-Demand Snapshot Capture
+    function captureFrame(nodeNum) {
+      const btn = document.getElementById(nodeNum === 1 ? 'n1SnapBtn' : 'n2SnapBtn');
+      const base = nodeNum === 1 ? NODE1_BASE : NODE2_BASE;
+      if (btn) btn.textContent = 'Capturing...';
+
+      const img = document.getElementById(nodeNum === 1 ? 'n1Snapshot' : 'n2Snapshot');
+      const ph = document.getElementById(nodeNum === 1 ? 'n1Placeholder' : 'n2Placeholder');
+      const ov = document.getElementById(nodeNum === 1 ? 'n1Overlay' : 'n2Overlay');
+
+      const testImg = new Image();
+      testImg.src = `${base}/screenshot?t=${Date.now()}`;
+      testImg.onload = () => {
+        img.src = testImg.src;
+        img.style.display = 'block';
+        if (ph) ph.style.display = 'none';
+        if (ov) ov.textContent = `Captured at ${new Date().toLocaleTimeString()}`;
+        if (btn) btn.textContent = '📸 Refresh Frame';
+      };
+      testImg.onerror = () => {
+        handleNodeSnapError(nodeNum);
+        if (btn) btn.textContent = '📸 Refresh Frame';
+      };
+    }
+
+    function handleNodeSnapError(nodeNum) {
+      const img = document.getElementById(nodeNum === 1 ? 'n1Snapshot' : 'n2Snapshot');
+      const ph = document.getElementById(nodeNum === 1 ? 'n1Placeholder' : 'n2Placeholder');
+      if (img) img.style.display = 'none';
+      if (ph) {
+        ph.style.display = 'block';
+        ph.innerHTML = '📴 Stream is currently idle or buffering on this node.';
+      }
+    }
+
+    // Fetch Cluster Status from both nodes in parallel
+    async function refreshClusterData() {
+      const [r1, r2] = await Promise.allSettled([
+        fetch(`${NODE1_BASE}/api/status?t=${Date.now()}`).then(r => r.json()),
+        fetch(`${NODE2_BASE}/api/status?t=${Date.now()}`).then(r => r.json())
+      ]);
+
+      const n1 = r1.status === 'fulfilled' ? r1.value : null;
+      const n2 = r2.status === 'fulfilled' ? r2.value : null;
+
+      updateNodeCard(1, n1);
+      updateNodeCard(2, n2);
+      updatePhonePool(n1, n2);
+    }
+
+    function updateNodeCard(nodeNum, d) {
+      const prefix = nodeNum === 1 ? 'n1' : 'n2';
+      const liveBadge = document.getElementById(`${prefix}LiveBadge`);
+      const stateElem = document.getElementById(`${prefix}State`);
+      const authElem = document.getElementById(`${prefix}Auth`);
+      const titleElem = document.getElementById(`${prefix}Title`);
+      const urlElem = document.getElementById(`${prefix}Url`);
+
+      if (!d) {
+        liveBadge.textContent = '🔴 Offline / Sleeping';
+        liveBadge.className = 'badge';
+        liveBadge.style.color = '#ef4444';
+        stateElem.textContent = 'OFFLINE';
+        authElem.textContent = '-';
+        titleElem.textContent = 'Unable to reach node';
+        return;
+      }
+
+      liveBadge.textContent = '🟢 Online';
+      liveBadge.className = 'badge badge-success';
+
+      const state = (d.status && d.status.state) ? d.status.state.toUpperCase() : 'IDLE';
+      stateElem.textContent = state;
+      stateElem.style.color = state === 'PLAYING' ? '#10b981' : (state === 'ERROR' ? '#ef4444' : '#60a5fa');
+
+      if (d.status && d.status.isLoggedIn) {
+        authElem.textContent = `✓ Account ${nodeNum} Active`;
+        authElem.style.color = '#10b981';
+      } else if (state === 'PLAYING') {
+        authElem.textContent = 'Guest Mode';
+        authElem.style.color = '#f59e0b';
+      } else {
+        authElem.textContent = 'Standby';
+        authElem.style.color = '#8b9bb4';
+      }
+
+      if (d.activePlayingUrl) {
+        const vMeta = d.status && d.status.videoDetails;
+        titleElem.textContent = (vMeta && vMeta.title) ? `🎬 ${vMeta.title}` : 'Playing Video';
+        urlElem.textContent = d.activePlayingUrl;
+        urlElem.href = d.activePlayingUrl;
+        if (!document.getElementById('streamUrlInput').value) {
+          document.getElementById('streamUrlInput').value = d.activePlayingUrl;
+        }
+      } else {
+        titleElem.textContent = 'No stream playing';
+        urlElem.textContent = 'Idle';
+        urlElem.href = '#';
+      }
+    }
+
+    function updatePhonePool(n1, n2) {
+      const pool = document.getElementById('phonePoolContainer');
+      const badge = document.getElementById('phoneStatusBadge');
+
+      // Combine phones from both nodes, deduping by IP or name
+      const allPhones = new Map();
+      if (n1 && n1.connectedPhones) {
+        n1.connectedPhones.forEach(p => allPhones.set(p.ip || p.name, { ...p, onNode1: true }));
+      }
+      if (n2 && n2.connectedPhones) {
+        n2.connectedPhones.forEach(p => {
+          const key = p.ip || p.name;
+          if (allPhones.has(key)) {
+            const existing = allPhones.get(key);
+            existing.onNode2 = true;
+          } else {
+            allPhones.set(key, { ...p, onNode2: true });
+          }
+        });
+      }
+
+      const list = Array.from(allPhones.values());
+
+      if (list.length > 0) {
+        badge.textContent = `✓ ${list.length} Phone(s) Connected`;
+        badge.className = 'badge badge-success';
+
+        pool.innerHTML = list.map(p => `
+          <div class="phone-item">
+            <div class="phone-top">
+              <span>📱 ${p.name || 'Phone'} <span style="background:rgba(59,130,246,0.25);color:#60a5fa;font-size:0.7rem;padding:2px 7px;border-radius:4px;margin-left:6px;border:1px solid rgba(96,165,250,0.3);">SHARED RESIDENTIAL TUNNEL</span></span>
+              <div style="font-size:0.75rem;color:#10b981;font-weight:700;">
+                ${(p.onNode1 && p.onNode2) ? '● Feeding Node 1 & Node 2' : (p.onNode1 ? '● Feeding Node 1' : '● Feeding Node 2')}
+              </div>
+            </div>
+            <div class="phone-details">
+              <span class="k">Public IP:</span><span class="v ip-tag">${p.ip || 'Detecting...'}</span>
+              <span class="k">Type:</span><span class="v" style="color:#10b981;">Residential Mobile</span>
+              <span class="k">Location:</span><span class="v">${p.location || (p.city ? `${p.city}, ${p.country}` : 'India')}</span>
+              <span class="k">ISP:</span><span class="v">${p.isp || 'Mobile Network'}</span>
+            </div>
+          </div>
+        `).join('');
+      } else {
+        badge.textContent = '0 Phones Active';
+        badge.className = 'badge';
+        badge.style.color = '#f59e0b';
+        pool.innerHTML = `
+          <div style="padding:14px;background:var(--card-inner);border:1px dashed var(--border);border-radius:8px;text-align:center;">
+            <div style="color:#f59e0b;font-weight:600;margin-bottom:4px;">No Phone Connected Yet</div>
+            <div style="font-size:0.8rem;color:var(--text-muted);">Run the command below in Termux on your phone. One phone will route traffic for BOTH nodes simultaneously.</div>
+          </div>
+        `;
+      }
+    }
+
+    // Logs switcher
+    function switchLogTab(nodeNum) {
+      activeLogNode = nodeNum;
+      document.getElementById('tabNode1').classList.toggle('active', nodeNum === 1);
+      document.getElementById('tabNode2').classList.toggle('active', nodeNum === 2);
+      refreshActiveLogs();
+    }
+
+    async function refreshActiveLogs() {
+      const base = activeLogNode === 1 ? NODE1_BASE : NODE2_BASE;
       try {
-        const res = await fetch('/logs?t=' + Date.now());
+        const res = await fetch(`${base}/logs?t=${Date.now()}`);
         if (res.ok) {
           const txt = await res.text();
           const lines = txt.split('\n').slice(-30).join('\n');
           const term = document.getElementById('terminalLogs');
-          term.textContent = lines;
+          term.textContent = lines || 'No log output yet.';
           term.scrollTop = term.scrollHeight;
         }
       } catch (_) {}
     }
 
-    // Zero aggressive polling: Screenshot auto-capture removed to eliminate CPU load!
-    // Lightweight data refresh every 30 seconds
-    setInterval(refreshData, 30000);
-    refreshData();
-    refreshLogs();
+    // Refresh every 25 seconds (no heavy load)
+    setInterval(refreshClusterData, 25000);
+    refreshClusterData();
+    refreshActiveLogs();
   </script>
 </body>
 </html>
